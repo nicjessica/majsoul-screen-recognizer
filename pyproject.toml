@@ -1,0 +1,20 @@
+[project]
+name = "majsoul-screen-recognizer"
+version = "0.1.0"
+description = "Local Majsoul screen recognition and tile-efficiency analysis tool for review and learning."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "PySide6>=6.8",
+  "mss>=9.0",
+  "opencv-python>=4.10",
+  "numpy>=2.0",
+  "Pillow>=10.4",
+]
+
+[tool.setuptools]
+packages = ["app", "recognizer", "mahjong"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+

@@ -1,0 +1,23 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.agents/
+.codex/
+
+# Local runtime state
+data/config.json
+data/debug/
+
+# User-generated screenshots/templates
+*.png
+data/templates/*.png
+!data/templates/.gitkeep
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
