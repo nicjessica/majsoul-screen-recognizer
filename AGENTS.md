@@ -301,4 +301,4 @@ git status --short
 
 ## 10. 多 Agent 协同
 
-本项目的多 Agent 角色、文件所有权、接口冻结、测试责任、逐轮 Git 提交和持续迭代流程统一遵循 [`MULTI_AGENT.md`](MULTI_AGENT.md)。核心规则是“1 个主 Agent + 最多 3 个专项 Agent”“单文件单负责人”；主 Agent 负责整体架构、功能路线、`app/main_window.py` 集成和最终验收，每轮通过验收后提交并标注本轮内容，并在已获得持续推进授权时主动规划和派发下一轮功能。
+本项目的多 Agent 角色、文件所有权、接口冻结、测试责任、逐轮 Git 提交、上下文压缩交接和持续迭代流程统一遵循 [`MULTI_AGENT.md`](MULTI_AGENT.md)。核心规则是“1 个主 Agent + 最多 3 个专项 Agent”“单文件单负责人”；主 Agent 负责整体架构、功能路线、`app/main_window.py` 集成和最终验收，每轮通过验收后提交并标注本轮内容，在触发自动上下文压缩后使用 `context-handoff` 技能完成当前轮收尾与新任务交接，并在已获得持续推进授权时主动规划和派发下一轮功能。
