@@ -27,7 +27,9 @@ from recognizer.config import (
     MeldConfig,
     MeldTileSlotConfig,
     PlayerMeldLayoutConfig,
+    PlayerRiverLayoutConfig,
     RelativeRegion,
+    RiverTileSlotConfig,
     load_config,
     save_config,
     validate_config,
@@ -61,6 +63,9 @@ class MainWindow(QMainWindow):
         self.pending_melds: list[MeldConfig] | None = None
         self.pending_meld_slots: list[tuple[int, int]] = []
         self.pending_meld_seat = "self"
+        self.pending_river_seat = "self"
+        self.pending_river_slots: list[RiverTileSlotConfig] | None = None
+        self.pending_river_slot_indexes: list[int] = []
         self.resume_timer_after_meld_config = False
 
         self.timer = QTimer(self)
@@ -90,6 +95,9 @@ class MainWindow(QMainWindow):
         select_opponent_meld_button = QPushButton("框选他家副露区")
         select_opponent_meld_button.clicked.connect(self.select_opponent_meld_region)
 
+        select_river_button = QPushButton("框选牌河区")
+        select_river_button.clicked.connect(self.select_river_region)
+
         counts_button = QPushButton("设置牌数")
         counts_button.clicked.connect(self.set_tile_counts)
 
@@ -98,6 +106,9 @@ class MainWindow(QMainWindow):
 
         opponent_meld_structure_button = QPushButton("配置他家副露")
         opponent_meld_structure_button.clicked.connect(self.configure_opponent_meld_structure)
+
+        river_structure_button = QPushButton("配置牌河牌槽")
+        river_structure_button.clicked.connect(self.configure_river_slots)
 
         threshold_button = QPushButton("设置识别阈值")
         threshold_button.clicked.connect(self.set_recognition_threshold)
@@ -121,11 +132,13 @@ class MainWindow(QMainWindow):
         region_row.addWidget(select_dora_button)
         region_row.addWidget(select_meld_button)
         region_row.addWidget(select_opponent_meld_button)
+        region_row.addWidget(select_river_button)
 
         action_row = QHBoxLayout()
         action_row.addWidget(counts_button)
         action_row.addWidget(meld_structure_button)
         action_row.addWidget(opponent_meld_structure_button)
+        action_row.addWidget(river_structure_button)
         action_row.addWidget(threshold_button)
         action_row.addWidget(self.start_button)
         action_row.addWidget(once_button)
@@ -178,6 +191,10 @@ class MainWindow(QMainWindow):
             f"{','.join(meld.kind for meld in player.melds) or player.tile_count}"
             for player in layout.opponent_melds
         ) or "未设置"
+        rivers = ", ".join(
+            f"{SEAT_LABELS.get(player.seat, player.seat)}={len(player.tiles) or player.tile_count}"
+            for player in layout.rivers
+        ) or "未设置"
         return (
             "牌区比例: "
             f"手牌 x={layout.hand_region.x:.3f}, y={layout.hand_region.y:.3f}, "
@@ -189,7 +206,8 @@ class MainWindow(QMainWindow):
             f"宝牌 x={layout.dora_region.x:.3f}, y={layout.dora_region.y:.3f}, "
             f"w={layout.dora_region.width:.3f}, h={layout.dora_region.height:.3f}; "
             f"副露 {meld_text}, 可见张数={layout.meld_tile_count}, "
-            f"组数={layout.open_meld_count}, 结构={meld_structure}; 他家副露 {opponents}"
+            f"组数={layout.open_meld_count}, 结构={meld_structure}; "
+            f"他家副露 {opponents}; 牌河 {rivers}"
         )
 
     def select_game_region(self) -> None:
@@ -217,6 +235,16 @@ class MainWindow(QMainWindow):
         self.pending_region = f"opponent_meld:{seat}"
         self.open_region_selector()
 
+    def select_river_region(self) -> None:
+        if self.config.game_region is None:
+            QMessageBox.warning(self, "缺少画面区域", "请先点击“框选画面”。")
+            return
+        seat = self._choose_seat("选择要框选牌河区的玩家", include_self=True)
+        if seat is None:
+            return
+        self.pending_region = f"river:{seat}"
+        self.open_region_selector()
+
     def open_region_selector(self) -> None:
         self.hide()
         self.selector = ScreenRegionSelector()
@@ -226,6 +254,13 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(150, self.selector.show)
 
     def on_selector_destroyed(self) -> None:
+        if self.pending_region == "river_slot" and not self.selector_completed:
+            self.pending_river_slots = None
+            self.pending_river_slot_indexes = []
+            self.pending_region = None
+            self.status_label.setText("已取消牌河牌槽配置，原配置未修改")
+            self._restore_after_meld_config()
+            return
         if self.pending_region == "meld_slot" and not self.selector_completed:
             self.pending_melds = None
             self.pending_meld_slots = []
@@ -233,15 +268,30 @@ class MainWindow(QMainWindow):
             self.pending_meld_seat = "self"
             self.status_label.setText("已取消副露结构配置，原配置未修改")
             self._restore_after_meld_config()
-        elif self.pending_region != "meld_slot":
+        elif self.pending_region not in {"meld_slot", "river_slot"}:
             self.show()
 
     def on_region_selected(self, region: ScreenRegion) -> None:
         self.selector_completed = True
+        if self.pending_region == "river_slot":
+            self.on_river_slot_selected(region)
+            return
         if self.pending_region == "meld_slot":
             self.on_meld_slot_selected(region)
             return
-        if self.pending_region and self.pending_region.startswith("opponent_meld:"):
+        if self.pending_region and self.pending_region.startswith("river:"):
+            seat = self.pending_region.split(":", 1)[1]
+            relative = self.to_relative_region(region)
+            if relative is None:
+                QMessageBox.warning(self, "区域无效", "请选择游戏画面内部区域。")
+                return
+            river = self._get_river_layout(seat, create=True)
+            assert river is not None
+            river.region = relative
+            river.tile_count = 0
+            river.tiles = []
+            message = f"{SEAT_LABELS[seat]}牌河区已保存；请配置当前仍可见的牌槽"
+        elif self.pending_region and self.pending_region.startswith("opponent_meld:"):
             seat = self.pending_region.split(":", 1)[1]
             relative = self.to_relative_region(region)
             if relative is None:
@@ -382,6 +432,141 @@ class MainWindow(QMainWindow):
             self.timer.stop()
             self.start_button.setText("开始识别")
         self._select_next_meld_slot()
+
+    def configure_river_slots(self) -> None:
+        seat = self._choose_seat("选择要配置牌槽的玩家", include_self=True)
+        if seat is None:
+            return
+        river = self._get_river_layout(seat)
+        if river is None or river.region is None:
+            QMessageBox.warning(self, "缺少牌河区域", f"请先框选{SEAT_LABELS[seat]}牌河区。")
+            return
+        text, ok = QInputDialog.getMultiLineText(
+            self,
+            f"配置{SEAT_LABELS[seat]}牌河牌槽",
+            "每行一张当前仍可见的牌：行 列 实际方向 normal|riichi\n"
+            "例：0 0 upright normal；立直横牌可写 1 3 rotated_cw riichi\n"
+            "空位或已被鸣走的牌不要配置，行列允许不连续。",
+            self._format_river_slots(river.tiles),
+        )
+        if not ok:
+            return
+        try:
+            slots = self._parse_river_slots(text)
+        except ValueError as exc:
+            QMessageBox.warning(self, "牌河结构无效", str(exc))
+            return
+        if not slots:
+            river.tiles = []
+            river.tile_count = 0
+            save_config(self.config)
+            self._invalidate_recognition_state()
+            self.layout_label.setText(self.layout_text())
+            self.status_label.setText(f"已清除{SEAT_LABELS[seat]}牌河牌槽")
+            return
+        self.pending_river_seat = seat
+        self.pending_river_slots = slots
+        self.pending_river_slot_indexes = list(range(len(slots)))
+        self.resume_timer_after_meld_config = self.timer.isActive()
+        if self.resume_timer_after_meld_config:
+            self.timer.stop()
+            self.start_button.setText("开始识别")
+        self._select_next_river_slot()
+
+    def _select_next_river_slot(self) -> None:
+        if not self.pending_river_slot_indexes:
+            self._finish_river_slots()
+            return
+        assert self.pending_river_slots is not None
+        index = self.pending_river_slot_indexes[0]
+        slot = self.pending_river_slots[index]
+        self.pending_region = "river_slot"
+        state = "立直横牌" if slot.is_riichi else "普通牌"
+        self.status_label.setText(
+            f"请框选{SEAT_LABELS[self.pending_river_seat]}牌河第 {slot.row + 1} 行"
+            f"第 {slot.column + 1} 列（{state}，{slot.orientation}）"
+        )
+        self.open_region_selector()
+
+    def on_river_slot_selected(self, selected: ScreenRegion) -> None:
+        if self.pending_river_slots is None or not self.pending_river_slot_indexes:
+            return
+        relative = self.to_relative_river_region(selected, self.pending_river_seat)
+        if relative is None:
+            QMessageBox.warning(self, "区域无效", "牌槽必须位于对应玩家的牌河区内。")
+            QTimer.singleShot(100, self._select_next_river_slot)
+            return
+        index = self.pending_river_slot_indexes.pop(0)
+        self.pending_river_slots[index].region = relative
+        QTimer.singleShot(100, self._select_next_river_slot)
+
+    def _finish_river_slots(self) -> None:
+        if self.pending_river_slots is None:
+            return
+        river = self._get_river_layout(self.pending_river_seat)
+        assert river is not None
+        old_tiles = river.tiles
+        old_count = river.tile_count
+        river.tiles = self.pending_river_slots
+        river.tile_count = len(river.tiles)
+        errors = validate_config(self.config)
+        if errors:
+            river.tiles = old_tiles
+            river.tile_count = old_count
+            QMessageBox.warning(self, "牌河结构无效", "\n".join(errors))
+        else:
+            save_config(self.config)
+            self._invalidate_recognition_state()
+            self.layout_label.setText(self.layout_text())
+            self.status_label.setText(f"{SEAT_LABELS[self.pending_river_seat]}牌河牌槽已保存")
+        self.pending_river_slots = None
+        self.pending_river_slot_indexes = []
+        self.pending_region = None
+        self.pending_river_seat = "self"
+        self._restore_after_meld_config()
+
+    @staticmethod
+    def _parse_river_slots(text: str) -> list[RiverTileSlotConfig]:
+        slots: list[RiverTileSlotConfig] = []
+        positions: set[tuple[int, int]] = set()
+        for line_number, raw_line in enumerate(text.splitlines(), start=1):
+            parts = raw_line.split()
+            if not parts:
+                continue
+            if len(parts) != 4:
+                raise ValueError(f"第 {line_number} 行需要四项：行 列 方向 normal|riichi")
+            try:
+                row, column = int(parts[0]), int(parts[1])
+            except ValueError as exc:
+                raise ValueError(f"第 {line_number} 行的行列必须是整数") from exc
+            if row < 0 or column < 0:
+                raise ValueError(f"第 {line_number} 行的行列不能小于 0")
+            if (row, column) in positions:
+                raise ValueError(f"第 {line_number} 行的行列位置重复")
+            orientation = parts[2]
+            if orientation not in MELD_ORIENTATIONS:
+                raise ValueError(f"第 {line_number} 行方向无效: {orientation}")
+            if parts[3] not in {"normal", "riichi"}:
+                raise ValueError(f"第 {line_number} 行状态必须是 normal 或 riichi")
+            positions.add((row, column))
+            slots.append(
+                RiverTileSlotConfig(
+                    region=RelativeRegion(0, 0, 1, 1),
+                    orientation=orientation,
+                    row=row,
+                    column=column,
+                    is_riichi=parts[3] == "riichi",
+                )
+            )
+        return sorted(slots, key=lambda slot: (slot.row, slot.column))
+
+    @staticmethod
+    def _format_river_slots(slots: list[RiverTileSlotConfig]) -> str:
+        return "\n".join(
+            f"{slot.row} {slot.column} {slot.orientation} "
+            f"{'riichi' if slot.is_riichi else 'normal'}"
+            for slot in sorted(slots, key=lambda item: (item.row, item.column))
+        )
 
     def _select_next_meld_slot(self) -> None:
         if not self.pending_meld_slots:
@@ -542,7 +727,11 @@ class MainWindow(QMainWindow):
         )
 
     def _choose_opponent_seat(self, title: str) -> str | None:
-        labels = [SEAT_LABELS[seat] for seat in ("right", "across", "left")]
+        return self._choose_seat(title, include_self=False)
+
+    def _choose_seat(self, title: str, include_self: bool) -> str | None:
+        seats = ("self", "right", "across", "left") if include_self else ("right", "across", "left")
+        labels = [SEAT_LABELS[seat] for seat in seats]
         label, ok = QInputDialog.getItem(self, title, "玩家：", labels, 0, False)
         if not ok:
             return None
@@ -559,6 +748,45 @@ class MainWindow(QMainWindow):
         player = PlayerMeldLayoutConfig(seat=seat)
         self.config.layout.opponent_melds.append(player)
         return player
+
+    def _get_river_layout(
+        self, seat: str, create: bool = False
+    ) -> PlayerRiverLayoutConfig | None:
+        for river in self.config.layout.rivers:
+            if river.seat == seat:
+                return river
+        if not create:
+            return None
+        river = PlayerRiverLayoutConfig(seat=seat)
+        self.config.layout.rivers.append(river)
+        return river
+
+    def to_relative_river_region(
+        self, selected: ScreenRegion, seat: str
+    ) -> RelativeRegion | None:
+        game = self.config.game_region
+        river = self._get_river_layout(seat)
+        region = river.region if river is not None else None
+        if game is None or region is None:
+            return None
+        parent = ScreenRegion(
+            left=game.left + round(region.x * game.width),
+            top=game.top + round(region.y * game.height),
+            width=round(region.width * game.width),
+            height=round(region.height * game.height),
+        )
+        left = max(selected.left, parent.left)
+        top = max(selected.top, parent.top)
+        right = min(selected.left + selected.width, parent.left + parent.width)
+        bottom = min(selected.top + selected.height, parent.top + parent.height)
+        if right <= left or bottom <= top:
+            return None
+        return RelativeRegion(
+            x=(left - parent.left) / parent.width,
+            y=(top - parent.top) / parent.height,
+            width=(right - left) / parent.width,
+            height=(bottom - top) / parent.height,
+        )
 
     def to_relative_region(self, selected: ScreenRegion) -> RelativeRegion | None:
         game = self.config.game_region
@@ -893,6 +1121,22 @@ class MainWindow(QMainWindow):
                 text += f"（部分未知：{player.error}）"
             opponent_lines.append(f"{SEAT_LABELS[seat]}副露: {text}")
         opponent_text = ("\n".join(opponent_lines) + "\n") if opponent_lines else ""
+        river_lines = []
+        rivers_by_seat = {player.seat: player for player in result.rivers}
+        for seat in ("self", "right", "across", "left"):
+            river = rivers_by_seat.get(seat)
+            if river is None:
+                continue
+            slots = []
+            for tile in sorted(river.tiles, key=lambda item: (item.row, item.column)):
+                name = tile.name or "?"
+                riichi = "(立直)" if tile.is_riichi else ""
+                slots.append(f"r{tile.row + 1}c{tile.column + 1}={name}{riichi}")
+            text = " ".join(slots) if slots else "-"
+            if river.error:
+                text += f"（部分未知：{river.error}）"
+            river_lines.append(f"{SEAT_LABELS[seat]}牌河: {text}")
+        river_text = ("\n".join(river_lines) + "\n") if river_lines else ""
         return (
             f"{title}\n"
             f"手牌: {' '.join(result.hand) if result.hand else '-'}\n"
@@ -900,6 +1144,7 @@ class MainWindow(QMainWindow):
             f"宝牌: {' '.join(result.dora_indicators) if result.dora_indicators else '-'}\n"
             f"副露: {meld_text}\n"
             f"{opponent_text}"
+            f"{river_text}"
             f"置信度: {result.confidence:.3f}\n\n"
             "牌效分析（已知可见牌修正）\n"
             f"{analysis_text}"
