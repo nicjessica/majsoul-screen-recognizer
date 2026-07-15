@@ -99,7 +99,8 @@ class TileRecognizer:
                 column = slots[index - 1].column if slots else index - 1
                 if match.score < self.config.recognition.threshold:
                     error = (
-                        f"river:{river.seat} tile {index} confidence too low: "
+                        f"river:{river.seat} tile {index} "
+                        f"row={row} column={column} confidence too low: "
                         f"{_format_candidates(candidates)}; "
                         f"threshold={self.config.recognition.threshold:.3f}"
                     )

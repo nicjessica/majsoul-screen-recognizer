@@ -1,12 +1,22 @@
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 import numpy as np
 
-from recognizer.config import MeldConfig, MeldTileSlotConfig, RelativeRegion, default_config
+from recognizer.config import (
+    MeldConfig,
+    MeldTileSlotConfig,
+    PlayerRiverLayoutConfig,
+    RelativeRegion,
+    RiverTileSlotConfig,
+    default_config,
+)
 from recognizer.models import TileMatch
 from recognizer.recognizer import RecognitionError, TileRecognizer
+from recognizer.stability import result_key
 from recognizer.templates import TemplateLibrary
+from recognizer.visible_tiles import collect_visible_tiles
 
 
 class _FakeCandidateTemplates:
@@ -88,6 +98,61 @@ class RecognitionDiagnosticTests(unittest.TestCase):
         self.assertEqual(result.meld_tiles, ["east"])
         self.assertEqual(result.confidence, 0.95)
         self.assertEqual(recognizer.templates.limits, [2, 2, 2])
+
+    def test_low_river_slot_reports_coordinates_without_polluting_results(self):
+        recognizer = TileRecognizer.__new__(TileRecognizer)
+        recognizer.config = default_config()
+        recognizer.config.layout.rivers = [PlayerRiverLayoutConfig(
+            seat="left",
+            region=RelativeRegion(0, 0, 1, 1),
+            tile_count=2,
+            tiles=[
+                RiverTileSlotConfig(RelativeRegion(0, 0, 0.5, 1), row=2, column=4),
+                RiverTileSlotConfig(RelativeRegion(0.5, 0, 0.5, 1), row=2, column=5),
+            ],
+        )]
+        recognizer.templates = _FakeCandidateTemplates([
+            [TileMatch("1m", 0.95), TileMatch("9m", 0.40)],
+            [TileMatch("2p", 0.70), TileMatch("3p", 0.68)],
+            [TileMatch("east", 0.93), TileMatch("south", 0.50)],
+        ])
+        tile = np.zeros((4, 4, 3), dtype=np.uint8)
+        recognizer.extract_tiles = lambda frame: ([tile], [], [], [])
+        recognizer.extract_river_tiles = lambda frame: {"left": [tile, tile]}
+
+        result = recognizer.recognize(tile)
+
+        failed, succeeded = result.rivers[0].tiles
+        self.assertIsNone(failed.name)
+        self.assertEqual(succeeded.name, "east")
+        for message in (failed.error, result.rivers[0].error):
+            self.assertIn("river:left", message)
+            self.assertIn("row=2", message)
+            self.assertIn("column=4", message)
+            self.assertIn("2p=0.700", message)
+            self.assertIn("3p=0.680", message)
+            self.assertIn("threshold=0.780", message)
+        self.assertEqual(result.confidence, 0.95)
+        self.assertEqual(collect_visible_tiles(result), ["east"])
+
+        changed_failed = replace(
+            failed,
+            match=TileMatch("2p", 0.10),
+            error="different diagnostic text",
+            candidates=[TileMatch("2p", 0.10), TileMatch("3p", 0.09)],
+        )
+        changed_river = replace(
+            result.rivers[0],
+            tiles=[changed_failed, succeeded],
+            error="different aggregate text",
+        )
+        changed_result = replace(
+            result,
+            rivers=[changed_river],
+            confidence=0.10,
+            matches=[],
+        )
+        self.assertEqual(result_key(result), result_key(changed_result))
 
 
 if __name__ == "__main__":
