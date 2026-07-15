@@ -26,6 +26,14 @@ class MeldRecognition:
 
 
 @dataclass(frozen=True)
+class PlayerMeldRecognition:
+    seat: str
+    meld_tiles: list[str]
+    melds: list[MeldRecognition]
+    error: str | None = None
+
+
+@dataclass(frozen=True)
 class RecognitionResult:
     hand: list[str]
     draw: str | None
@@ -35,3 +43,4 @@ class RecognitionResult:
     matches: list[TileMatch]
     meld_error: str | None = None
     melds: list[MeldRecognition] = field(default_factory=list)
+    opponent_melds: list[PlayerMeldRecognition] = field(default_factory=list)

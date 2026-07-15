@@ -96,6 +96,66 @@ class MahjongAnalysisTests(unittest.TestCase):
         self.assertEqual(analysis.recommendations[0].discard, "9m")
         self.assertEqual(analysis.recommendations[0].effective_tiles, ["red"])
 
+    def test_visible_tiles_from_multiple_sources_reduce_ukeire(self):
+        tiles = ["1m", "2m", "3m", "2p", "3p", "4p", "3s", "4s", "5s", "red"]
+
+        analysis = analyze_hand(
+            tiles,
+            open_meld_count=1,
+            visible_tiles=["red", "red"],
+        )
+
+        self.assertEqual(analysis.recommendations[0].effective_tiles, ["red"])
+        self.assertEqual(analysis.recommendations[0].ukeire_count, 1)
+
+    def test_visible_red_five_is_normalized_for_ukeire(self):
+        tiles = ["1m", "2m", "3m", "2p", "3p", "4p", "3s", "4s", "5s", "5m"]
+
+        analysis = analyze_hand(tiles, open_meld_count=1, visible_tiles=["5mr"])
+
+        self.assertEqual(analysis.recommendations[0].effective_tiles, ["5m"])
+        self.assertEqual(analysis.recommendations[0].ukeire_count, 2)
+
+    def test_dora_indicators_are_plain_visible_tile_inputs(self):
+        tiles = ["1m", "2m", "3m", "2p", "3p", "4p", "3s", "4s", "5s", "red"]
+        indicator_sets = [
+            ["red"],
+            ["red", "south", "west"],
+            ["red", "south", "west", "north", "white"],
+        ]
+
+        for indicators in indicator_sets:
+            with self.subTest(indicator_count=len(indicators)):
+                analysis = analyze_hand(
+                    tiles,
+                    open_meld_count=1,
+                    visible_tiles=indicators,
+                )
+                self.assertEqual(analysis.recommendations[0].effective_tiles, ["red"])
+                self.assertEqual(analysis.recommendations[0].ukeire_count, 2)
+
+    def test_candidate_discard_is_counted_as_visible(self):
+        completed_hand = [
+            "1m", "2m", "3m", "2p", "3p", "4p", "3s", "4s", "5s",
+            "east", "east", "east", "red", "red",
+        ]
+
+        analysis = analyze_hand(completed_hand)
+        discard_red = next(item for item in analysis.recommendations if item.discard == "red")
+
+        self.assertIn("red", discard_red.effective_tiles)
+        self.assertEqual(discard_red.ukeire_count, 2)
+
+    def test_concealed_and_visible_tiles_cannot_exceed_four(self):
+        tiles = ["1m", "2m", "3m", "2p", "3p", "4p", "3s", "4s", "5s", "red"]
+
+        with self.assertRaisesRegex(ValueError, "red"):
+            analyze_hand(
+                tiles,
+                open_meld_count=1,
+                visible_tiles=["red", "red", "red", "red"],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -25,7 +25,8 @@
     "dora_tile_count": 1,
     "meld_tile_count": 0,
     "open_meld_count": 0,
-    "melds": []
+    "melds": [],
+    "opponent_melds": []
   },
   "recognition": {
     "threshold": 0.78

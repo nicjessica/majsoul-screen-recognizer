@@ -9,6 +9,7 @@ from recognizer.config import AppConfig, MeldConfig, RelativeRegion
 from recognizer.models import (
     MeldRecognition,
     MeldTileRecognition,
+    PlayerMeldRecognition,
     RecognitionResult,
     TileMatch,
 )
@@ -63,7 +64,25 @@ class TileRecognizer:
         ]
         meld_errors = [group.error for group in meld_results if group.error]
         meld_error = "；".join(meld_errors) or None
-        matches = [*core_matches, *meld_matches]
+        opponent_results: list[PlayerMeldRecognition] = []
+        opponent_matches: list[TileMatch] = []
+        opponent_tiles = self.extract_opponent_meld_tiles(frame_rgb)
+        for player in self.config.layout.opponent_melds:
+            groups, successful = self._recognize_melds(
+                opponent_tiles.get(player.seat, []),
+                configs=player.melds,
+                area=player.seat,
+            )
+            names = [tile.name for group in groups for tile in group.tiles if tile.name is not None]
+            errors = [group.error for group in groups if group.error]
+            opponent_results.append(PlayerMeldRecognition(
+                seat=player.seat,
+                meld_tiles=names,
+                melds=groups,
+                error="; ".join(errors) or None,
+            ))
+            opponent_matches.extend(successful)
+        matches = [*core_matches, *meld_matches, *opponent_matches]
         confidence = sum(match.score for match in core_matches) / max(len(core_matches), 1)
         return RecognitionResult(
             hand=hand,
@@ -74,10 +93,16 @@ class TileRecognizer:
             matches=matches,
             meld_error=meld_error,
             melds=meld_results,
+            opponent_melds=opponent_results,
         )
 
-    def _recognize_melds(self, meld_tiles: list[np.ndarray]) -> tuple[list[MeldRecognition], list[TileMatch]]:
-        configs = self.config.layout.melds
+    def _recognize_melds(
+        self,
+        meld_tiles: list[np.ndarray],
+        configs: list[MeldConfig] | None = None,
+        area: str = "self",
+    ) -> tuple[list[MeldRecognition], list[TileMatch]]:
+        configs = self.config.layout.melds if configs is None else configs
         if not configs and not meld_tiles:
             return [], []
         group_sizes = [len(meld.tiles) for meld in configs] if configs else [len(meld_tiles)]
@@ -98,6 +123,7 @@ class TileRecognizer:
                         f"候选 {_format_candidates(candidates)}，"
                         f"阈值 {self.config.recognition.threshold:.3f}"
                     )
+                    error = f"{area} meld: {error}"
                     tile_results.append(
                         MeldTileRecognition(
                             name=None,
@@ -158,6 +184,21 @@ class TileRecognizer:
                 meld_tiles = split_region(meld_region, layout.meld_tile_count)
         return hand_tiles, draw_tiles, dora_tiles, meld_tiles
 
+    def extract_opponent_meld_tiles(self, frame_rgb: np.ndarray) -> dict[str, list[np.ndarray]]:
+        extracted: dict[str, list[np.ndarray]] = {}
+        for player in self.config.layout.opponent_melds:
+            if player.region is None:
+                extracted[player.seat] = []
+                continue
+            region = crop_relative(frame_rgb, player.region)
+            if player.melds:
+                extracted[player.seat] = [
+                    tile for group in crop_meld_slots(region, player.melds) for tile in group
+                ]
+            else:
+                extracted[player.seat] = split_region(region, player.tile_count)
+        return extracted
+
     def save_debug_tiles(self, frame_rgb: np.ndarray, output_dir: str | Path = "data/debug/last_failed") -> Path:
         output = Path(output_dir)
         output.mkdir(parents=True, exist_ok=True)
@@ -182,6 +223,20 @@ class TileRecognizer:
         else:
             for index, tile in enumerate(meld_tiles, start=1):
                 Image.fromarray(tile).save(output / f"meld_{index:02d}.png")
+        opponent_tiles = self.extract_opponent_meld_tiles(frame_rgb)
+        for player in self.config.layout.opponent_melds:
+            tiles = opponent_tiles.get(player.seat, [])
+            if player.melds:
+                offset = 0
+                for group_index, meld in enumerate(player.melds, start=1):
+                    for tile_index in range(1, len(meld.tiles) + 1):
+                        Image.fromarray(tiles[offset]).save(
+                            output / f"meld_{player.seat}_{group_index:02d}_{tile_index:02d}.png"
+                        )
+                        offset += 1
+            else:
+                for index, tile in enumerate(tiles, start=1):
+                    Image.fromarray(tile).save(output / f"meld_{player.seat}_{index:02d}.png")
         return output
 
     def save_region_overlay(self, frame_rgb: np.ndarray, output_path: str | Path) -> None:
@@ -197,6 +252,9 @@ class TileRecognizer:
             self.config.layout.meld_tile_count > 0 or self.config.layout.melds
         ):
             regions.append(("meld", self.config.layout.meld_region, (255, 190, 60)))
+        for player in self.config.layout.opponent_melds:
+            if player.region is not None and (player.tile_count > 0 or player.melds):
+                regions.append((f"meld:{player.seat}", player.region, (210, 100, 255)))
 
         for label, region, color in regions:
             left = round(region.x * width)
@@ -258,6 +316,8 @@ def crop_meld_slots(region: np.ndarray, melds: list[MeldConfig]) -> list[list[np
                 tile = np.rot90(tile, 1)
             elif slot.orientation == "rotated_ccw":
                 tile = np.rot90(tile, -1)
+            elif slot.orientation == "rotated_180":
+                tile = np.rot90(tile, 2)
             tiles.append(np.ascontiguousarray(tile))
         groups.append(tiles)
     return groups

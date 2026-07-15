@@ -6,6 +6,7 @@ from pathlib import Path
 from recognizer.config import (
     MeldConfig,
     MeldTileSlotConfig,
+    PlayerMeldLayoutConfig,
     RelativeRegion,
     default_config,
     load_config,
@@ -73,6 +74,40 @@ class ConfigTests(unittest.TestCase):
             loaded = load_config(path)
 
             self.assertEqual(loaded.layout.melds, config.layout.melds)
+
+    def test_opponent_meld_round_trip_and_old_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            config = default_config()
+            config.templates_dir = str(Path(tmp) / "templates")
+            config.layout.opponent_melds = [PlayerMeldLayoutConfig(
+                seat="across",
+                region=RelativeRegion(0.2, 0.1, 0.3, 0.2),
+                tile_count=3,
+                melds=[MeldConfig("pon", [
+                    MeldTileSlotConfig(RelativeRegion(0, 0, 0.3, 1), "rotated_180"),
+                    MeldTileSlotConfig(RelativeRegion(0.3, 0, 0.3, 1), "rotated_180"),
+                    MeldTileSlotConfig(RelativeRegion(0.6, 0, 0.3, 1), "rotated_180"),
+                ])],
+            )]
+            save_config(config, path)
+            self.assertEqual(load_config(path).layout.opponent_melds, config.layout.opponent_melds)
+
+            path.write_text(json.dumps({"layout": {}}), encoding="utf-8")
+            self.assertEqual(load_config(path).layout.opponent_melds, [])
+
+    def test_validate_opponent_meld_seats_and_layout(self):
+        config = default_config()
+        config.layout.opponent_melds = [
+            PlayerMeldLayoutConfig("self", tile_count=1),
+            PlayerMeldLayoutConfig("right", tile_count=3),
+            PlayerMeldLayoutConfig("right", region=RelativeRegion(0, 0, 1, 1), tile_count=-1),
+        ]
+        text = "\n".join(validate_config(config))
+        self.assertIn("must be right/across/left", text)
+        self.assertIn("is duplicated", text)
+        self.assertIn("region is required", text)
+        self.assertIn("cannot be negative", text)
 
     def test_unknown_meld_values_degrade_to_safe_defaults(self):
         with tempfile.TemporaryDirectory() as tmp:

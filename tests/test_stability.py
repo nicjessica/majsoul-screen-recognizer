@@ -2,10 +2,11 @@ import unittest
 
 import numpy as np
 
-from recognizer.config import RelativeRegion, default_config
+from recognizer.config import PlayerMeldLayoutConfig, RelativeRegion, default_config
 from recognizer.models import (
     MeldRecognition,
     MeldTileRecognition,
+    PlayerMeldRecognition,
     RecognitionResult,
 )
 from recognizer.stability import KeyRegionSnapshot, RecognitionStabilizer, result_key
@@ -69,6 +70,17 @@ class KeyRegionSnapshotTests(unittest.TestCase):
 
         self.assertEqual(snapshot.regions.keys(), {"hand", "meld"})
 
+    def test_snapshot_includes_each_active_opponent_meld_region(self):
+        config = default_config()
+        config.layout.draw_tile_count = 0
+        config.layout.dora_tile_count = 0
+        config.layout.opponent_melds = [
+            PlayerMeldLayoutConfig("right", RelativeRegion(0.5, 0, 0.5, 0.5), 3),
+            PlayerMeldLayoutConfig("left", RelativeRegion(0.5, 0.5, 0.5, 0.5), 3),
+        ]
+        snapshot = KeyRegionSnapshot.from_frame(np.zeros((20, 20, 3), dtype=np.uint8), config.layout)
+        self.assertEqual(snapshot.regions.keys(), {"hand", "meld:right", "meld:left"})
+
 
 class RecognitionStabilizerTests(unittest.TestCase):
     def setUp(self):
@@ -83,6 +95,19 @@ class RecognitionStabilizerTests(unittest.TestCase):
 
         self.assertNotEqual(result_key(first), result_key(second))
         self.assertNotEqual(result_key(first), result_key(third))
+
+    def test_result_key_includes_opponents_in_fixed_seat_order_not_scores(self):
+        base = _result(meld_name=None)
+        tile = MeldTileRecognition("3p", None)
+        right = PlayerMeldRecognition("right", ["3p"], [MeldRecognition("pon", [tile], 0.9)])
+        changed = PlayerMeldRecognition("right", ["4p"], [MeldRecognition("pon", [MeldTileRecognition("4p", None)], 0.1)])
+        first = RecognitionResult(**{**base.__dict__, "opponent_melds": [right]})
+        reordered = RecognitionResult(**{**base.__dict__, "opponent_melds": [
+            PlayerMeldRecognition("left", [], [], None), right
+        ]})
+        second = RecognitionResult(**{**base.__dict__, "opponent_melds": [changed]})
+        self.assertEqual(result_key(first), result_key(reordered))
+        self.assertNotEqual(result_key(first), result_key(second))
 
     def test_first_recognition_and_two_reuses_publish_on_third_observation(self):
         stabilizer = RecognitionStabilizer(required_observations=3)

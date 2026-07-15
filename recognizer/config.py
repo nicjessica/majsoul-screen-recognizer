@@ -20,7 +20,8 @@ class RelativeRegion:
 
 
 MELD_KINDS = {"unknown", "chi", "pon", "minkan", "ankan", "kakan"}
-MELD_ORIENTATIONS = {"upright", "rotated_cw", "rotated_ccw"}
+PLAYER_SEATS = ("self", "right", "across", "left")
+MELD_ORIENTATIONS = {"upright", "rotated_cw", "rotated_ccw", "rotated_180"}
 
 
 @dataclass
@@ -37,6 +38,14 @@ class MeldConfig:
 
 
 @dataclass
+class PlayerMeldLayoutConfig:
+    seat: str
+    region: RelativeRegion | None = None
+    tile_count: int = 0
+    melds: list[MeldConfig] = field(default_factory=list)
+
+
+@dataclass
 class LayoutConfig:
     hand_region: RelativeRegion
     draw_region: RelativeRegion
@@ -48,6 +57,7 @@ class LayoutConfig:
     meld_tile_count: int = 0
     open_meld_count: int = 0
     melds: list[MeldConfig] = field(default_factory=list)
+    opponent_melds: list[PlayerMeldLayoutConfig] = field(default_factory=list)
 
 
 @dataclass
@@ -126,6 +136,10 @@ def _config_from_dict(data: dict[str, Any]) -> AppConfig:
         meld_tile_count=meld_tile_count,
         open_meld_count=int(open_meld_count),
         melds=[_meld_from_dict(item) for item in layout_data.get("melds", [])],
+        opponent_melds=[
+            _player_meld_layout_from_dict(item)
+            for item in layout_data.get("opponent_melds", [])
+        ],
     )
 
     recognition_data = data.get("recognition", {})
@@ -174,6 +188,16 @@ def _meld_from_dict(data: dict[str, Any]) -> MeldConfig:
     return MeldConfig(kind=kind, tiles=tiles)
 
 
+def _player_meld_layout_from_dict(data: dict[str, Any]) -> PlayerMeldLayoutConfig:
+    region_data = data.get("region")
+    return PlayerMeldLayoutConfig(
+        seat=str(data.get("seat", "")),
+        region=RelativeRegion(**region_data) if region_data else None,
+        tile_count=int(data.get("tile_count", 0)),
+        melds=[_meld_from_dict(item) for item in data.get("melds", [])],
+    )
+
+
 def validate_config(config: AppConfig) -> list[str]:
     """返回供 UI 展示的配置错误；加载旧配置时不会自动调用。"""
     errors: list[str] = []
@@ -183,6 +207,23 @@ def validate_config(config: AppConfig) -> list[str]:
         errors.append("副露组数必须在 0 至 4 之间。")
     if not 0.0 <= config.recognition.threshold <= 1.0:
         errors.append("识别置信度阈值必须在 0 至 1 之间。")
+
+    seen_opponent_seats: set[str] = set()
+    for player in layout.opponent_melds:
+        if player.seat not in PLAYER_SEATS[1:]:
+            errors.append(f"Opponent meld seat must be right/across/left: {player.seat}")
+        elif player.seat in seen_opponent_seats:
+            errors.append(f"Opponent meld seat is duplicated: {player.seat}")
+        seen_opponent_seats.add(player.seat)
+        if player.tile_count < 0:
+            errors.append(f"Opponent {player.seat} meld tile count cannot be negative.")
+        if (player.tile_count > 0 or player.melds) and player.region is None:
+            errors.append(f"Opponent {player.seat} meld region is required.")
+        if player.region is not None and not _is_valid_relative_region(player.region):
+            errors.append(f"Opponent {player.seat} meld region is outside 0..1.")
+        if player.melds and player.tile_count not in (0, sum(len(meld.tiles) for meld in player.melds)):
+            errors.append(f"Opponent {player.seat} meld tile count does not match structured slots.")
+        errors.extend(_validate_meld_groups(player.melds, f"Opponent {player.seat}"))
 
     if not layout.melds:
         return errors
@@ -239,3 +280,40 @@ def validate_config(config: AppConfig) -> list[str]:
                 )
 
     return errors
+
+
+def _validate_meld_groups(melds: list[MeldConfig], label: str) -> list[str]:
+    errors: list[str] = []
+    expected_slot_counts = {"chi": 3, "pon": 3, "minkan": 4, "ankan": 4, "kakan": 4}
+    for meld_index, meld in enumerate(melds, start=1):
+        expected = expected_slot_counts.get(meld.kind)
+        if meld.kind not in MELD_KINDS:
+            errors.append(f"{label} meld {meld_index} has invalid kind: {meld.kind}")
+        if expected is not None and len(meld.tiles) != expected:
+            errors.append(f"{label} meld {meld_index} {meld.kind} requires {expected} tile slots.")
+        elif meld.kind == "unknown" and not meld.tiles:
+            errors.append(f"{label} meld {meld_index} requires at least one tile slot.")
+        for tile_index, tile in enumerate(meld.tiles, start=1):
+            if tile.orientation not in MELD_ORIENTATIONS:
+                errors.append(f"{label} meld {meld_index} tile {tile_index} has invalid orientation.")
+            if tile.stack_level < 0:
+                errors.append(f"{label} meld {meld_index} tile {tile_index} stack level cannot be negative.")
+            region = tile.region
+            if not (
+                0.0 <= region.x < 1.0 and 0.0 <= region.y < 1.0
+                and region.width > 0.0 and region.height > 0.0
+                and region.x + region.width <= 1.0 and region.y + region.height <= 1.0
+            ):
+                errors.append(f"{label} meld {meld_index} tile {tile_index} region is outside 0..1.")
+    return errors
+
+
+def _is_valid_relative_region(region: RelativeRegion) -> bool:
+    return (
+        0.0 <= region.x < 1.0
+        and 0.0 <= region.y < 1.0
+        and region.width > 0.0
+        and region.height > 0.0
+        and region.x + region.width <= 1.0
+        and region.y + region.height <= 1.0
+    )

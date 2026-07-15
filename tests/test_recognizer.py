@@ -2,7 +2,9 @@ import unittest
 
 import numpy as np
 
-from recognizer.config import MeldConfig, MeldTileSlotConfig, RelativeRegion, default_config
+from recognizer.config import (
+    MeldConfig, MeldTileSlotConfig, PlayerMeldLayoutConfig, RelativeRegion, default_config,
+)
 from recognizer.models import TileMatch
 from recognizer.recognizer import RecognitionError, TileRecognizer, crop_meld_slots
 
@@ -116,6 +118,33 @@ class RecognizerTests(unittest.TestCase):
         expected_rotated = np.rot90(region[:, 3:7], 1)
         np.testing.assert_array_equal(groups[0][1], expected_rotated)
         np.testing.assert_array_equal(groups[0][2], region[:, 4:6])
+
+    def test_opponent_meld_soft_failure_and_confidence_isolation(self):
+        recognizer = TileRecognizer.__new__(TileRecognizer)
+        recognizer.config = default_config()
+        recognizer.config.layout.opponent_melds = [
+            PlayerMeldLayoutConfig("right", RelativeRegion(0, 0, 1, 1), tile_count=2)
+        ]
+        recognizer.templates = _FakeTemplates([
+            TileMatch("1m", 0.95), TileMatch("2p", 0.90), TileMatch("3p", 0.60)
+        ])
+        tile = np.zeros((10, 10, 3), dtype=np.uint8)
+        recognizer.extract_tiles = lambda frame: ([tile], [], [], [])
+        recognizer.extract_opponent_meld_tiles = lambda frame: {"right": [tile, tile]}
+
+        result = recognizer.recognize(tile)
+
+        self.assertEqual(result.confidence, 0.95)
+        self.assertEqual(result.opponent_melds[0].meld_tiles, ["2p"])
+        self.assertEqual([item.name for item in result.opponent_melds[0].melds[0].tiles], ["2p", None])
+        self.assertEqual([item.name for item in result.matches], ["1m", "2p"])
+
+    def test_crop_meld_slots_rotates_180_degrees(self):
+        region = np.arange(2 * 3 * 3, dtype=np.uint8).reshape(2, 3, 3)
+        melds = [MeldConfig("unknown", [
+            MeldTileSlotConfig(RelativeRegion(0, 0, 1, 1), "rotated_180")
+        ])]
+        np.testing.assert_array_equal(crop_meld_slots(region, melds)[0][0], np.rot90(region, 2))
 
 
 if __name__ == "__main__":

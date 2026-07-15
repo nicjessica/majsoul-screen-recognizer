@@ -24,6 +24,9 @@ class KeyRegionSnapshot:
             active_regions.append(("dora", layout.dora_region))
         if layout.meld_region is not None and (layout.meld_tile_count > 0 or layout.melds):
             active_regions.append(("meld", layout.meld_region))
+        for player in layout.opponent_melds:
+            if player.region is not None and (player.tile_count > 0 or player.melds):
+                active_regions.append((f"meld:{player.seat}", player.region))
 
         return cls(
             regions={
@@ -57,11 +60,24 @@ def result_key(result: RecognitionResult) -> tuple[object, ...]:
         )
     else:
         meld_key = (("legacy", tuple(result.meld_tiles)),)
+    opponents_by_seat = {player.seat: player for player in result.opponent_melds}
+    opponent_key = []
+    for seat in ("right", "across", "left"):
+        player = opponents_by_seat.get(seat)
+        if player is None or (not player.melds and not player.meld_tiles):
+            opponent_key.append((seat, ()))
+        elif player.melds:
+            opponent_key.append(
+                (seat, tuple((meld.kind, tuple(tile.name for tile in meld.tiles)) for meld in player.melds))
+            )
+        else:
+            opponent_key.append((seat, (("legacy", tuple(player.meld_tiles)),)))
     return (
         tuple(result.hand),
         result.draw,
         tuple(result.dora_indicators),
         meld_key,
+        tuple(opponent_key),
     )
 
 
