@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 
 from app.main_window import MainWindow
-from recognizer.config import RelativeRegion, default_config
+from recognizer.config import PlayerMeldLayoutConfig, RelativeRegion, default_config
 from recognizer.geometry import ScreenRegion
 
 
@@ -16,6 +16,13 @@ class MainWindowHelperTests(unittest.TestCase):
         self.assertEqual([meld.kind for meld in melds], ["pon", "kakan"])
         self.assertEqual(melds[0].tiles[0].orientation, "rotated_cw")
         self.assertEqual(melds[1].tiles[3].stack_level, 1)
+
+    def test_parse_opponent_meld_accepts_rotated_180(self):
+        melds = MainWindow._parse_meld_structure(
+            "pon rotated_180 rotated_180 rotated_180"
+        )
+
+        self.assertEqual(melds[0].tiles[0].orientation, "rotated_180")
 
     def test_parse_meld_structure_rejects_wrong_slot_count(self):
         with self.assertRaises(ValueError):
@@ -45,6 +52,31 @@ class MainWindowHelperTests(unittest.TestCase):
         self.assertAlmostEqual(relative.y, 0.125)
         self.assertAlmostEqual(relative.width, 0.25)
         self.assertAlmostEqual(relative.height, 0.25)
+
+    def test_selected_region_converts_relative_to_opponent_meld_region(self):
+        config = default_config()
+        config.game_region = ScreenRegion(left=0, top=0, width=1000, height=500)
+        config.layout.opponent_melds = [
+            PlayerMeldLayoutConfig(
+                seat="across",
+                region=RelativeRegion(0.2, 0.1, 0.4, 0.2),
+            )
+        ]
+        window = SimpleNamespace(config=config)
+        window._get_opponent_meld_layout = lambda seat: MainWindow._get_opponent_meld_layout(
+            window, seat
+        )
+
+        relative = MainWindow.to_relative_meld_region(
+            window,
+            ScreenRegion(left=300, top=75, width=100, height=50),
+            "across",
+        )
+
+        self.assertAlmostEqual(relative.x, 0.25)
+        self.assertAlmostEqual(relative.y, 0.25)
+        self.assertAlmostEqual(relative.width, 0.25)
+        self.assertAlmostEqual(relative.height, 0.5)
 
 
 if __name__ == "__main__":

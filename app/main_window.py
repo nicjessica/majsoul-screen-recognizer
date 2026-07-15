@@ -26,6 +26,7 @@ from recognizer.config import (
     MELD_ORIENTATIONS,
     MeldConfig,
     MeldTileSlotConfig,
+    PlayerMeldLayoutConfig,
     RelativeRegion,
     load_config,
     save_config,
@@ -35,6 +36,10 @@ from recognizer.geometry import ScreenRegion
 from recognizer.recognizer import RecognitionError, TileRecognizer
 from recognizer.stability import KeyRegionSnapshot, RecognitionStabilizer
 from recognizer.template_builder import build_templates_from_screenshot
+from recognizer.visible_tiles import collect_visible_tiles
+
+
+SEAT_LABELS = {"self": "自己", "right": "右家", "across": "对家", "left": "左家"}
 
 
 class MainWindow(QMainWindow):
@@ -55,6 +60,7 @@ class MainWindow(QMainWindow):
         self.selector_completed = False
         self.pending_melds: list[MeldConfig] | None = None
         self.pending_meld_slots: list[tuple[int, int]] = []
+        self.pending_meld_seat = "self"
         self.resume_timer_after_meld_config = False
 
         self.timer = QTimer(self)
@@ -81,11 +87,17 @@ class MainWindow(QMainWindow):
         select_meld_button = QPushButton("框选副露区")
         select_meld_button.clicked.connect(lambda: self.select_layout_region("meld"))
 
+        select_opponent_meld_button = QPushButton("框选他家副露区")
+        select_opponent_meld_button.clicked.connect(self.select_opponent_meld_region)
+
         counts_button = QPushButton("设置牌数")
         counts_button.clicked.connect(self.set_tile_counts)
 
         meld_structure_button = QPushButton("配置副露结构")
         meld_structure_button.clicked.connect(self.configure_meld_structure)
+
+        opponent_meld_structure_button = QPushButton("配置他家副露")
+        opponent_meld_structure_button.clicked.connect(self.configure_opponent_meld_structure)
 
         threshold_button = QPushButton("设置识别阈值")
         threshold_button.clicked.connect(self.set_recognition_threshold)
@@ -108,10 +120,12 @@ class MainWindow(QMainWindow):
         region_row.addWidget(select_draw_button)
         region_row.addWidget(select_dora_button)
         region_row.addWidget(select_meld_button)
+        region_row.addWidget(select_opponent_meld_button)
 
         action_row = QHBoxLayout()
         action_row.addWidget(counts_button)
         action_row.addWidget(meld_structure_button)
+        action_row.addWidget(opponent_meld_structure_button)
         action_row.addWidget(threshold_button)
         action_row.addWidget(self.start_button)
         action_row.addWidget(once_button)
@@ -159,6 +173,11 @@ class MainWindow(QMainWindow):
         if meld is not None:
             meld_text = f"x={meld.x:.3f}, y={meld.y:.3f}, w={meld.width:.3f}, h={meld.height:.3f}"
         meld_structure = ",".join(item.kind for item in layout.melds) or "等宽回退"
+        opponents = ", ".join(
+            f"{SEAT_LABELS.get(player.seat, player.seat)}="
+            f"{','.join(meld.kind for meld in player.melds) or player.tile_count}"
+            for player in layout.opponent_melds
+        ) or "未设置"
         return (
             "牌区比例: "
             f"手牌 x={layout.hand_region.x:.3f}, y={layout.hand_region.y:.3f}, "
@@ -170,7 +189,7 @@ class MainWindow(QMainWindow):
             f"宝牌 x={layout.dora_region.x:.3f}, y={layout.dora_region.y:.3f}, "
             f"w={layout.dora_region.width:.3f}, h={layout.dora_region.height:.3f}; "
             f"副露 {meld_text}, 可见张数={layout.meld_tile_count}, "
-            f"组数={layout.open_meld_count}, 结构={meld_structure}"
+            f"组数={layout.open_meld_count}, 结构={meld_structure}; 他家副露 {opponents}"
         )
 
     def select_game_region(self) -> None:
@@ -188,6 +207,16 @@ class MainWindow(QMainWindow):
         self.pending_region = region_kind
         self.open_region_selector()
 
+    def select_opponent_meld_region(self) -> None:
+        if self.config.game_region is None:
+            QMessageBox.warning(self, "缺少画面区域", "请先点击“框选画面”。")
+            return
+        seat = self._choose_opponent_seat("选择要框选副露区的玩家")
+        if seat is None:
+            return
+        self.pending_region = f"opponent_meld:{seat}"
+        self.open_region_selector()
+
     def open_region_selector(self) -> None:
         self.hide()
         self.selector = ScreenRegionSelector()
@@ -201,6 +230,7 @@ class MainWindow(QMainWindow):
             self.pending_melds = None
             self.pending_meld_slots = []
             self.pending_region = None
+            self.pending_meld_seat = "self"
             self.status_label.setText("已取消副露结构配置，原配置未修改")
             self._restore_after_meld_config()
         elif self.pending_region != "meld_slot":
@@ -211,7 +241,19 @@ class MainWindow(QMainWindow):
         if self.pending_region == "meld_slot":
             self.on_meld_slot_selected(region)
             return
-        if self.pending_region == "game":
+        if self.pending_region and self.pending_region.startswith("opponent_meld:"):
+            seat = self.pending_region.split(":", 1)[1]
+            relative = self.to_relative_region(region)
+            if relative is None:
+                QMessageBox.warning(self, "区域无效", "请选择游戏画面内部区域。")
+                return
+            player = self._get_opponent_meld_layout(seat, create=True)
+            assert player is not None
+            player.region = relative
+            player.tile_count = 0
+            player.melds = []
+            message = f"{SEAT_LABELS[seat]}副露区已保存；请继续配置逐张结构"
+        elif self.pending_region == "game":
             self.config.game_region = region
             message = "画面区域已保存"
         elif self.pending_region in {"hand", "draw", "dora", "meld"}:
@@ -245,6 +287,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "缺少副露区域", "请先框选游戏画面和副露区。")
             return
 
+        self.pending_meld_seat = "self"
         current = self._format_meld_structure(self.config.layout.melds)
         text, ok = QInputDialog.getMultiLineText(
             self,
@@ -293,6 +336,53 @@ class MainWindow(QMainWindow):
             self.start_button.setText("开始识别")
         self._select_next_meld_slot()
 
+    def configure_opponent_meld_structure(self) -> None:
+        seat = self._choose_opponent_seat("选择要配置结构的玩家")
+        if seat is None:
+            return
+        player = self._get_opponent_meld_layout(seat)
+        if player is None or player.region is None:
+            QMessageBox.warning(
+                self,
+                "缺少副露区域",
+                f"请先框选{SEAT_LABELS[seat]}副露区。",
+            )
+            return
+        text, ok = QInputDialog.getMultiLineText(
+            self,
+            f"配置{SEAT_LABELS[seat]}副露结构",
+            "每行一组：类型 牌1实际方向 牌2实际方向 ...\n"
+            "方向支持 upright rotated_cw rotated_ccw rotated_180，可追加 @叠放层。",
+            self._format_meld_structure(player.melds),
+        )
+        if not ok:
+            return
+        try:
+            melds = self._parse_meld_structure(text)
+        except ValueError as exc:
+            QMessageBox.warning(self, "副露结构无效", str(exc))
+            return
+        if not melds:
+            player.melds = []
+            player.tile_count = 0
+            save_config(self.config)
+            self._invalidate_recognition_state()
+            self.layout_label.setText(self.layout_text())
+            self.status_label.setText(f"已清除{SEAT_LABELS[seat]}副露结构")
+            return
+        self.pending_meld_seat = seat
+        self.pending_melds = melds
+        self.pending_meld_slots = [
+            (group_index, tile_index)
+            for group_index, meld in enumerate(melds)
+            for tile_index in range(len(meld.tiles))
+        ]
+        self.resume_timer_after_meld_config = self.timer.isActive()
+        if self.resume_timer_after_meld_config:
+            self.timer.stop()
+            self.start_button.setText("开始识别")
+        self._select_next_meld_slot()
+
     def _select_next_meld_slot(self) -> None:
         if not self.pending_meld_slots:
             self._finish_meld_structure()
@@ -302,7 +392,8 @@ class MainWindow(QMainWindow):
         meld = self.pending_melds[group_index]
         self.pending_region = "meld_slot"
         self.status_label.setText(
-            f"请框选第 {group_index + 1}/{len(self.pending_melds)} 组（{meld.kind}）"
+            f"请框选{SEAT_LABELS[self.pending_meld_seat]}第 "
+            f"{group_index + 1}/{len(self.pending_melds)} 组（{meld.kind}）"
             f"第 {tile_index + 1}/{len(meld.tiles)} 张，方向 {meld.tiles[tile_index].orientation}"
         )
         self.open_region_selector()
@@ -310,7 +401,7 @@ class MainWindow(QMainWindow):
     def on_meld_slot_selected(self, selected: ScreenRegion) -> None:
         if self.pending_melds is None or not self.pending_meld_slots:
             return
-        relative = self.to_relative_meld_region(selected)
+        relative = self.to_relative_meld_region(selected, self.pending_meld_seat)
         if relative is None:
             QMessageBox.warning(self, "区域无效", "牌槽必须位于已框选的副露区内。")
             QTimer.singleShot(100, self._select_next_meld_slot)
@@ -322,26 +413,42 @@ class MainWindow(QMainWindow):
     def _finish_meld_structure(self) -> None:
         if self.pending_melds is None:
             return
-        old_melds = self.config.layout.melds
-        old_group_count = self.config.layout.open_meld_count
-        old_tile_count = self.config.layout.meld_tile_count
-        self.config.layout.melds = self.pending_melds
-        self.config.layout.open_meld_count = len(self.pending_melds)
-        self.config.layout.meld_tile_count = sum(len(meld.tiles) for meld in self.pending_melds)
+        if self.pending_meld_seat == "self":
+            target = self.config.layout
+            old_melds = target.melds
+            old_group_count = target.open_meld_count
+            old_tile_count = target.meld_tile_count
+            target.melds = self.pending_melds
+            target.open_meld_count = len(self.pending_melds)
+            target.meld_tile_count = sum(len(meld.tiles) for meld in self.pending_melds)
+        else:
+            target = self._get_opponent_meld_layout(self.pending_meld_seat)
+            assert target is not None
+            old_melds = target.melds
+            old_group_count = None
+            old_tile_count = target.tile_count
+            target.melds = self.pending_melds
+            target.tile_count = sum(len(meld.tiles) for meld in self.pending_melds)
         errors = validate_config(self.config)
         if errors:
-            self.config.layout.melds = old_melds
-            self.config.layout.open_meld_count = old_group_count
-            self.config.layout.meld_tile_count = old_tile_count
+            target.melds = old_melds
+            if self.pending_meld_seat == "self":
+                target.open_meld_count = old_group_count
+                target.meld_tile_count = old_tile_count
+            else:
+                target.tile_count = old_tile_count
             QMessageBox.warning(self, "副露结构无效", "\n".join(errors))
         else:
             save_config(self.config)
             self._invalidate_recognition_state()
             self.layout_label.setText(self.layout_text())
-            self.status_label.setText("副露结构和逐张牌槽已保存")
+            self.status_label.setText(
+                f"{SEAT_LABELS[self.pending_meld_seat]}副露结构和逐张牌槽已保存"
+            )
         self.pending_melds = None
         self.pending_meld_slots = []
         self.pending_region = None
+        self.pending_meld_seat = "self"
         self._restore_after_meld_config()
 
     def _restore_after_meld_config(self) -> None:
@@ -404,9 +511,15 @@ class MainWindow(QMainWindow):
             for meld in melds
         )
 
-    def to_relative_meld_region(self, selected: ScreenRegion) -> RelativeRegion | None:
+    def to_relative_meld_region(
+        self, selected: ScreenRegion, seat: str = "self"
+    ) -> RelativeRegion | None:
         game = self.config.game_region
-        meld = self.config.layout.meld_region
+        if seat == "self":
+            meld = self.config.layout.meld_region
+        else:
+            player = self._get_opponent_meld_layout(seat)
+            meld = player.region if player is not None else None
         if game is None or meld is None:
             return None
         parent = ScreenRegion(
@@ -427,6 +540,25 @@ class MainWindow(QMainWindow):
             width=(right - left) / parent.width,
             height=(bottom - top) / parent.height,
         )
+
+    def _choose_opponent_seat(self, title: str) -> str | None:
+        labels = [SEAT_LABELS[seat] for seat in ("right", "across", "left")]
+        label, ok = QInputDialog.getItem(self, title, "玩家：", labels, 0, False)
+        if not ok:
+            return None
+        return {value: key for key, value in SEAT_LABELS.items()}[label]
+
+    def _get_opponent_meld_layout(
+        self, seat: str, create: bool = False
+    ) -> PlayerMeldLayoutConfig | None:
+        for player in self.config.layout.opponent_melds:
+            if player.seat == seat:
+                return player
+        if not create:
+            return None
+        player = PlayerMeldLayoutConfig(seat=seat)
+        self.config.layout.opponent_melds.append(player)
+        return player
 
     def to_relative_region(self, selected: ScreenRegion) -> RelativeRegion | None:
         game = self.config.game_region
@@ -738,7 +870,11 @@ class MainWindow(QMainWindow):
             tiles.append(result.draw)
 
         try:
-            analysis = analyze_hand(tiles, open_meld_count=self.config.layout.open_meld_count)
+            analysis = analyze_hand(
+                tiles,
+                open_meld_count=self.config.layout.open_meld_count,
+                visible_tiles=collect_visible_tiles(result),
+            )
             analysis_text = self.format_analysis(analysis)
         except ValueError as exc:
             analysis_text = f"牌效分析不可用: {exc}"
@@ -746,14 +882,26 @@ class MainWindow(QMainWindow):
         meld_text = " ".join(result.meld_tiles) if result.meld_tiles else "-"
         if result.meld_error:
             meld_text += f"（部分未知：{result.meld_error}）"
+        opponent_lines = []
+        opponents_by_seat = {player.seat: player for player in result.opponent_melds}
+        for seat in ("right", "across", "left"):
+            player = opponents_by_seat.get(seat)
+            if player is None:
+                continue
+            text = " ".join(player.meld_tiles) if player.meld_tiles else "-"
+            if player.error:
+                text += f"（部分未知：{player.error}）"
+            opponent_lines.append(f"{SEAT_LABELS[seat]}副露: {text}")
+        opponent_text = ("\n".join(opponent_lines) + "\n") if opponent_lines else ""
         return (
             f"{title}\n"
             f"手牌: {' '.join(result.hand) if result.hand else '-'}\n"
             f"摸牌: {result.draw or '-'}\n"
             f"宝牌: {' '.join(result.dora_indicators) if result.dora_indicators else '-'}\n"
             f"副露: {meld_text}\n"
+            f"{opponent_text}"
             f"置信度: {result.confidence:.3f}\n\n"
-            "牌效分析\n"
+            "牌效分析（已知可见牌修正）\n"
             f"{analysis_text}"
         )
 
