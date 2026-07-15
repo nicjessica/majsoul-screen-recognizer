@@ -3,10 +3,13 @@ import unittest
 import numpy as np
 
 from recognizer.config import (
-    MeldConfig, MeldTileSlotConfig, PlayerMeldLayoutConfig, RelativeRegion, default_config,
+    MeldConfig, MeldTileSlotConfig, PlayerMeldLayoutConfig, PlayerRiverLayoutConfig,
+    RelativeRegion, RiverTileSlotConfig, default_config,
 )
 from recognizer.models import TileMatch
-from recognizer.recognizer import RecognitionError, TileRecognizer, crop_meld_slots
+from recognizer.recognizer import (
+    RecognitionError, TileRecognizer, crop_meld_slots, crop_river_slots,
+)
 
 
 class _FakeTemplates:
@@ -145,6 +148,36 @@ class RecognizerTests(unittest.TestCase):
             MeldTileSlotConfig(RelativeRegion(0, 0, 1, 1), "rotated_180")
         ])]
         np.testing.assert_array_equal(crop_meld_slots(region, melds)[0][0], np.rot90(region, 2))
+
+    def test_river_soft_failure_preserves_riichi_and_core_confidence(self):
+        recognizer = TileRecognizer.__new__(TileRecognizer)
+        recognizer.config = default_config()
+        recognizer.config.layout.rivers = [PlayerRiverLayoutConfig(
+            "self", RelativeRegion(0, 0, 1, 1), 2,
+            [
+                RiverTileSlotConfig(RelativeRegion(0, 0, 0.5, 1)),
+                RiverTileSlotConfig(RelativeRegion(0.5, 0, 0.5, 1), is_riichi=True),
+            ],
+        )]
+        recognizer.templates = _FakeTemplates([
+            TileMatch("1m", 0.95), TileMatch("2p", 0.90), TileMatch("3p", 0.60)
+        ])
+        tile = np.zeros((10, 10, 3), dtype=np.uint8)
+        recognizer.extract_tiles = lambda frame: ([tile], [], [], [])
+        recognizer.extract_river_tiles = lambda frame: {"self": [tile, tile]}
+
+        result = recognizer.recognize(tile)
+        self.assertEqual(result.confidence, 0.95)
+        self.assertEqual([item.name for item in result.rivers[0].tiles], ["2p", None])
+        self.assertTrue(result.rivers[0].tiles[1].is_riichi)
+        self.assertEqual((result.rivers[0].tiles[1].row, result.rivers[0].tiles[1].column), (0, 0))
+        self.assertIn("river:self", result.rivers[0].error)
+        self.assertEqual([item.name for item in result.matches], ["1m", "2p"])
+
+    def test_crop_river_slots_uses_explicit_regions_and_rotation(self):
+        region = np.arange(2 * 4 * 3, dtype=np.uint8).reshape(2, 4, 3)
+        slots = [RiverTileSlotConfig(RelativeRegion(0.5, 0, 0.5, 1), "rotated_180")]
+        np.testing.assert_array_equal(crop_river_slots(region, slots)[0], np.rot90(region[:, 2:4], 2))
 
 
 if __name__ == "__main__":

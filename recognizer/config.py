@@ -46,6 +46,23 @@ class PlayerMeldLayoutConfig:
 
 
 @dataclass
+class RiverTileSlotConfig:
+    region: RelativeRegion
+    orientation: str = "upright"
+    row: int = 0
+    column: int = 0
+    is_riichi: bool = False
+
+
+@dataclass
+class PlayerRiverLayoutConfig:
+    seat: str
+    region: RelativeRegion | None = None
+    tile_count: int = 0
+    tiles: list[RiverTileSlotConfig] = field(default_factory=list)
+
+
+@dataclass
 class LayoutConfig:
     hand_region: RelativeRegion
     draw_region: RelativeRegion
@@ -58,6 +75,7 @@ class LayoutConfig:
     open_meld_count: int = 0
     melds: list[MeldConfig] = field(default_factory=list)
     opponent_melds: list[PlayerMeldLayoutConfig] = field(default_factory=list)
+    rivers: list[PlayerRiverLayoutConfig] = field(default_factory=list)
 
 
 @dataclass
@@ -140,6 +158,7 @@ def _config_from_dict(data: dict[str, Any]) -> AppConfig:
             _player_meld_layout_from_dict(item)
             for item in layout_data.get("opponent_melds", [])
         ],
+        rivers=[_player_river_layout_from_dict(item) for item in layout_data.get("rivers", [])],
     )
 
     recognition_data = data.get("recognition", {})
@@ -198,6 +217,28 @@ def _player_meld_layout_from_dict(data: dict[str, Any]) -> PlayerMeldLayoutConfi
     )
 
 
+def _player_river_layout_from_dict(data: dict[str, Any]) -> PlayerRiverLayoutConfig:
+    region_data = data.get("region")
+    tiles = []
+    for tile_data in data.get("tiles", []):
+        orientation = str(tile_data.get("orientation", "upright"))
+        if orientation not in MELD_ORIENTATIONS:
+            orientation = "upright"
+        tiles.append(RiverTileSlotConfig(
+            region=RelativeRegion(**tile_data["region"]),
+            orientation=orientation,
+            row=int(tile_data.get("row", 0)),
+            column=int(tile_data.get("column", 0)),
+            is_riichi=bool(tile_data.get("is_riichi", False)),
+        ))
+    return PlayerRiverLayoutConfig(
+        seat=str(data.get("seat", "")),
+        region=RelativeRegion(**region_data) if region_data else None,
+        tile_count=int(data.get("tile_count", 0)),
+        tiles=tiles,
+    )
+
+
 def validate_config(config: AppConfig) -> list[str]:
     """返回供 UI 展示的配置错误；加载旧配置时不会自动调用。"""
     errors: list[str] = []
@@ -224,6 +265,48 @@ def validate_config(config: AppConfig) -> list[str]:
         if player.melds and player.tile_count not in (0, sum(len(meld.tiles) for meld in player.melds)):
             errors.append(f"Opponent {player.seat} meld tile count does not match structured slots.")
         errors.extend(_validate_meld_groups(player.melds, f"Opponent {player.seat}"))
+
+    seen_river_seats: set[str] = set()
+    for river in layout.rivers:
+        if river.seat not in PLAYER_SEATS:
+            errors.append(f"River seat must be self/right/across/left: {river.seat}")
+        elif river.seat in seen_river_seats:
+            errors.append(f"River seat is duplicated: {river.seat}")
+        seen_river_seats.add(river.seat)
+        if river.tile_count < 0:
+            errors.append(f"River {river.seat} tile count cannot be negative.")
+        if (river.tile_count > 0 or river.tiles) and river.region is None:
+            errors.append(f"River {river.seat} region is required.")
+        if river.region is not None and not _is_valid_relative_region(river.region):
+            errors.append(f"River {river.seat} region is outside 0..1.")
+        if river.tiles and river.tile_count not in (0, len(river.tiles)):
+            errors.append(f"River {river.seat} tile count does not match explicit slots.")
+        seen_positions: set[tuple[int, int]] = set()
+        seen_regions: set[tuple[float, float, float, float]] = set()
+        for index, tile in enumerate(river.tiles, start=1):
+            if tile.orientation not in MELD_ORIENTATIONS:
+                errors.append(f"River {river.seat} tile {index} has invalid orientation.")
+            if tile.row < 0 or tile.column < 0:
+                errors.append(f"River {river.seat} tile {index} row/column cannot be negative.")
+            if not _is_valid_relative_region(tile.region):
+                errors.append(f"River {river.seat} tile {index} region is outside 0..1.")
+            position = (tile.row, tile.column)
+            if position in seen_positions:
+                errors.append(
+                    f"River {river.seat} tile {index} duplicates row/column {position}."
+                )
+            seen_positions.add(position)
+            region_key = (
+                tile.region.x,
+                tile.region.y,
+                tile.region.width,
+                tile.region.height,
+            )
+            if region_key in seen_regions:
+                errors.append(
+                    f"River {river.seat} tile {index} duplicates an explicit region."
+                )
+            seen_regions.add(region_key)
 
     if not layout.melds:
         return errors

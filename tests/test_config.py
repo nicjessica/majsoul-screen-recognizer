@@ -7,6 +7,8 @@ from recognizer.config import (
     MeldConfig,
     MeldTileSlotConfig,
     PlayerMeldLayoutConfig,
+    PlayerRiverLayoutConfig,
+    RiverTileSlotConfig,
     RelativeRegion,
     default_config,
     load_config,
@@ -108,6 +110,67 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("is duplicated", text)
         self.assertIn("region is required", text)
         self.assertIn("cannot be negative", text)
+
+    def test_river_round_trip_and_validation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            config = default_config()
+            config.templates_dir = str(Path(tmp) / "templates")
+            config.layout.rivers = [PlayerRiverLayoutConfig(
+                "across", RelativeRegion(0.2, 0.2, 0.4, 0.3), 1,
+                [RiverTileSlotConfig(
+                    RelativeRegion(0, 0, 0.2, 0.4), "rotated_180", 1, 2, True
+                )],
+            )]
+            save_config(config, path)
+            self.assertEqual(load_config(path).layout.rivers, config.layout.rivers)
+
+        config = default_config()
+        config.layout.rivers = [
+            PlayerRiverLayoutConfig("future", tile_count=1),
+            PlayerRiverLayoutConfig("left", RelativeRegion(0, 0, 1, 1), -1),
+            PlayerRiverLayoutConfig("left", RelativeRegion(0, 0, 1, 1), 1, [
+                RiverTileSlotConfig(RelativeRegion(0, 0, 1, 1), row=-1)
+            ]),
+        ]
+        text = "\n".join(validate_config(config))
+        self.assertIn("must be self/right/across/left", text)
+        self.assertIn("is duplicated", text)
+        self.assertIn("region is required", text)
+        self.assertIn("cannot be negative", text)
+        self.assertIn("row/column cannot be negative", text)
+
+    def test_validate_river_slots_rejects_duplicate_position_and_exact_region(self):
+        config = default_config()
+        config.layout.rivers = [PlayerRiverLayoutConfig(
+            "self",
+            RelativeRegion(0, 0, 1, 1),
+            3,
+            [
+                RiverTileSlotConfig(RelativeRegion(0, 0, 0.4, 0.4), row=0, column=0),
+                RiverTileSlotConfig(RelativeRegion(0.3, 0.2, 0.4, 0.4), row=0, column=0),
+                RiverTileSlotConfig(RelativeRegion(0, 0, 0.4, 0.4), row=1, column=0),
+            ],
+        )]
+
+        text = "\n".join(validate_config(config))
+
+        self.assertIn("duplicates row/column", text)
+        self.assertIn("duplicates an explicit region", text)
+
+    def test_validate_river_slots_allows_partial_overlap(self):
+        config = default_config()
+        config.layout.rivers = [PlayerRiverLayoutConfig(
+            "right",
+            RelativeRegion(0, 0, 1, 1),
+            2,
+            [
+                RiverTileSlotConfig(RelativeRegion(0, 0, 0.6, 0.6), row=0, column=0),
+                RiverTileSlotConfig(RelativeRegion(0.4, 0.4, 0.6, 0.6), row=0, column=1),
+            ],
+        )]
+
+        self.assertEqual(validate_config(config), [])
 
     def test_unknown_meld_values_degrade_to_safe_defaults(self):
         with tempfile.TemporaryDirectory() as tmp:

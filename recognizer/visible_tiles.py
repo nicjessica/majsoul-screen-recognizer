@@ -14,6 +14,11 @@ def collect_visible_tiles(result: RecognitionResult) -> list[str]:
         player = opponents.get(seat)
         if player is not None:
             visible.extend(_meld_tile_names(player.melds, player.meld_tiles))
+    rivers = {river.seat: river for river in result.rivers}
+    for seat in PLAYER_SEATS:
+        river = rivers.get(seat)
+        if river is not None:
+            visible.extend(tile.name for tile in river.tiles if tile.name is not None)
     return visible
 
 

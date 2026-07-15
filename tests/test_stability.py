@@ -2,11 +2,15 @@ import unittest
 
 import numpy as np
 
-from recognizer.config import PlayerMeldLayoutConfig, RelativeRegion, default_config
+from recognizer.config import (
+    PlayerMeldLayoutConfig, PlayerRiverLayoutConfig, RelativeRegion, default_config,
+)
 from recognizer.models import (
     MeldRecognition,
     MeldTileRecognition,
     PlayerMeldRecognition,
+    ObservedTileRecognition,
+    PlayerRiverRecognition,
     RecognitionResult,
 )
 from recognizer.stability import KeyRegionSnapshot, RecognitionStabilizer, result_key
@@ -81,6 +85,16 @@ class KeyRegionSnapshotTests(unittest.TestCase):
         snapshot = KeyRegionSnapshot.from_frame(np.zeros((20, 20, 3), dtype=np.uint8), config.layout)
         self.assertEqual(snapshot.regions.keys(), {"hand", "meld:right", "meld:left"})
 
+    def test_snapshot_includes_active_rivers(self):
+        config = default_config()
+        config.layout.draw_tile_count = config.layout.dora_tile_count = 0
+        config.layout.rivers = [
+            PlayerRiverLayoutConfig("self", RelativeRegion(0, 0, 0.5, 0.5), 1),
+            PlayerRiverLayoutConfig("across", RelativeRegion(0.5, 0.5, 0.5, 0.5), 1),
+        ]
+        snapshot = KeyRegionSnapshot.from_frame(np.zeros((20, 20, 3), dtype=np.uint8), config.layout)
+        self.assertEqual(snapshot.regions.keys(), {"hand", "river:self", "river:across"})
+
 
 class RecognitionStabilizerTests(unittest.TestCase):
     def setUp(self):
@@ -108,6 +122,21 @@ class RecognitionStabilizerTests(unittest.TestCase):
         second = RecognitionResult(**{**base.__dict__, "opponent_melds": [changed]})
         self.assertEqual(result_key(first), result_key(reordered))
         self.assertNotEqual(result_key(first), result_key(second))
+
+    def test_result_key_includes_river_names_and_riichi_not_scores(self):
+        base = _result(meld_name=None)
+        first_tile = ObservedTileRecognition("2p", None, is_riichi=False)
+        riichi_tile = ObservedTileRecognition("2p", None, is_riichi=True)
+        moved_tile = ObservedTileRecognition("2p", None, row=1, column=2)
+        first = RecognitionResult(**{**base.__dict__, "rivers": [PlayerRiverRecognition("left", [first_tile])]})
+        same = RecognitionResult(**{**base.__dict__, "rivers": [PlayerRiverRecognition(
+            "left", [ObservedTileRecognition("2p", None, candidates=[], is_riichi=False)]
+        )]})
+        riichi = RecognitionResult(**{**base.__dict__, "rivers": [PlayerRiverRecognition("left", [riichi_tile])]})
+        moved = RecognitionResult(**{**base.__dict__, "rivers": [PlayerRiverRecognition("left", [moved_tile])]})
+        self.assertEqual(result_key(first), result_key(same))
+        self.assertNotEqual(result_key(first), result_key(riichi))
+        self.assertNotEqual(result_key(first), result_key(moved))
 
     def test_first_recognition_and_two_reuses_publish_on_third_observation(self):
         stabilizer = RecognitionStabilizer(required_observations=3)

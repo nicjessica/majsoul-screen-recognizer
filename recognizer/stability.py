@@ -27,6 +27,9 @@ class KeyRegionSnapshot:
         for player in layout.opponent_melds:
             if player.region is not None and (player.tile_count > 0 or player.melds):
                 active_regions.append((f"meld:{player.seat}", player.region))
+        for river in layout.rivers:
+            if river.region is not None and (river.tile_count > 0 or river.tiles):
+                active_regions.append((f"river:{river.seat}", river.region))
 
         return cls(
             regions={
@@ -72,11 +75,25 @@ def result_key(result: RecognitionResult) -> tuple[object, ...]:
             )
         else:
             opponent_key.append((seat, (("legacy", tuple(player.meld_tiles)),)))
+    rivers_by_seat = {river.seat: river for river in result.rivers}
+    river_key = tuple(
+        (
+            seat,
+            tuple(
+                (tile.name, tile.is_riichi, tile.row, tile.column)
+                for tile in rivers_by_seat[seat].tiles
+            )
+            if seat in rivers_by_seat
+            else (),
+        )
+        for seat in ("self", "right", "across", "left")
+    )
     return (
         tuple(result.hand),
         result.draw,
         tuple(result.dora_indicators),
         meld_key,
+        river_key,
         tuple(opponent_key),
     )
 

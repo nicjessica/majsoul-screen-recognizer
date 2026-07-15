@@ -34,6 +34,24 @@ class PlayerMeldRecognition:
 
 
 @dataclass(frozen=True)
+class ObservedTileRecognition:
+    name: str | None
+    match: TileMatch | None
+    error: str | None = None
+    candidates: list[TileMatch] = field(default_factory=list)
+    is_riichi: bool = False
+    row: int = 0
+    column: int = 0
+
+
+@dataclass(frozen=True)
+class PlayerRiverRecognition:
+    seat: str
+    tiles: list[ObservedTileRecognition]
+    error: str | None = None
+
+
+@dataclass(frozen=True)
 class RecognitionResult:
     hand: list[str]
     draw: str | None
@@ -44,3 +62,4 @@ class RecognitionResult:
     meld_error: str | None = None
     melds: list[MeldRecognition] = field(default_factory=list)
     opponent_melds: list[PlayerMeldRecognition] = field(default_factory=list)
+    rivers: list[PlayerRiverRecognition] = field(default_factory=list)

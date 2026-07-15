@@ -26,7 +26,8 @@
     "meld_tile_count": 0,
     "open_meld_count": 0,
     "melds": [],
-    "opponent_melds": []
+    "opponent_melds": [],
+    "rivers": []
   },
   "recognition": {
     "threshold": 0.78

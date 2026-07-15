@@ -5,11 +5,13 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
-from recognizer.config import AppConfig, MeldConfig, RelativeRegion
+from recognizer.config import AppConfig, MeldConfig, RelativeRegion, RiverTileSlotConfig
 from recognizer.models import (
     MeldRecognition,
     MeldTileRecognition,
     PlayerMeldRecognition,
+    ObservedTileRecognition,
+    PlayerRiverRecognition,
     RecognitionResult,
     TileMatch,
 )
@@ -82,7 +84,43 @@ class TileRecognizer:
                 error="; ".join(errors) or None,
             ))
             opponent_matches.extend(successful)
-        matches = [*core_matches, *meld_matches, *opponent_matches]
+        river_results: list[PlayerRiverRecognition] = []
+        river_matches: list[TileMatch] = []
+        river_tiles = self.extract_river_tiles(frame_rgb)
+        for river in self.config.layout.rivers:
+            recognized: list[ObservedTileRecognition] = []
+            errors: list[str] = []
+            slots = river.tiles
+            for index, tile in enumerate(river_tiles.get(river.seat, []), start=1):
+                candidates = self.templates.match_candidates(tile, limit=2)
+                match = candidates[0]
+                is_riichi = slots[index - 1].is_riichi if slots else False
+                row = slots[index - 1].row if slots else 0
+                column = slots[index - 1].column if slots else index - 1
+                if match.score < self.config.recognition.threshold:
+                    error = (
+                        f"river:{river.seat} tile {index} confidence too low: "
+                        f"{_format_candidates(candidates)}; "
+                        f"threshold={self.config.recognition.threshold:.3f}"
+                    )
+                    recognized.append(ObservedTileRecognition(
+                        None, match, error, candidates, is_riichi, row, column
+                    ))
+                    errors.append(error)
+                else:
+                    recognized.append(ObservedTileRecognition(
+                        match.name,
+                        match,
+                        candidates=candidates,
+                        is_riichi=is_riichi,
+                        row=row,
+                        column=column,
+                    ))
+                    river_matches.append(match)
+            river_results.append(PlayerRiverRecognition(
+                river.seat, recognized, "; ".join(errors) or None
+            ))
+        matches = [*core_matches, *meld_matches, *opponent_matches, *river_matches]
         confidence = sum(match.score for match in core_matches) / max(len(core_matches), 1)
         return RecognitionResult(
             hand=hand,
@@ -94,6 +132,7 @@ class TileRecognizer:
             meld_error=meld_error,
             melds=meld_results,
             opponent_melds=opponent_results,
+            rivers=river_results,
         )
 
     def _recognize_melds(
@@ -199,6 +238,19 @@ class TileRecognizer:
                 extracted[player.seat] = split_region(region, player.tile_count)
         return extracted
 
+    def extract_river_tiles(self, frame_rgb: np.ndarray) -> dict[str, list[np.ndarray]]:
+        extracted: dict[str, list[np.ndarray]] = {}
+        for river in self.config.layout.rivers:
+            if river.region is None:
+                extracted[river.seat] = []
+                continue
+            region = crop_relative(frame_rgb, river.region)
+            if river.tiles:
+                extracted[river.seat] = crop_river_slots(region, river.tiles)
+            else:
+                extracted[river.seat] = split_region(region, river.tile_count)
+        return extracted
+
     def save_debug_tiles(self, frame_rgb: np.ndarray, output_dir: str | Path = "data/debug/last_failed") -> Path:
         output = Path(output_dir)
         output.mkdir(parents=True, exist_ok=True)
@@ -237,6 +289,16 @@ class TileRecognizer:
             else:
                 for index, tile in enumerate(tiles, start=1):
                     Image.fromarray(tile).save(output / f"meld_{player.seat}_{index:02d}.png")
+        river_tiles = self.extract_river_tiles(frame_rgb)
+        for river in self.config.layout.rivers:
+            tiles = river_tiles.get(river.seat, [])
+            for index, tile in enumerate(tiles, start=1):
+                if river.tiles:
+                    slot = river.tiles[index - 1]
+                    name = f"river_{river.seat}_r{slot.row:02d}_c{slot.column:02d}_{index:02d}.png"
+                else:
+                    name = f"river_{river.seat}_{index:02d}.png"
+                Image.fromarray(tile).save(output / name)
         return output
 
     def save_region_overlay(self, frame_rgb: np.ndarray, output_path: str | Path) -> None:
@@ -255,6 +317,9 @@ class TileRecognizer:
         for player in self.config.layout.opponent_melds:
             if player.region is not None and (player.tile_count > 0 or player.melds):
                 regions.append((f"meld:{player.seat}", player.region, (210, 100, 255)))
+        for river in self.config.layout.rivers:
+            if river.region is not None and (river.tile_count > 0 or river.tiles):
+                regions.append((f"river:{river.seat}", river.region, (80, 220, 220)))
 
         for label, region, color in regions:
             left = round(region.x * width)
@@ -321,6 +386,20 @@ def crop_meld_slots(region: np.ndarray, melds: list[MeldConfig]) -> list[list[np
             tiles.append(np.ascontiguousarray(tile))
         groups.append(tiles)
     return groups
+
+
+def crop_river_slots(region: np.ndarray, slots: list[RiverTileSlotConfig]) -> list[np.ndarray]:
+    tiles: list[np.ndarray] = []
+    for slot in slots:
+        tile = crop_relative(region, slot.region)
+        if slot.orientation == "rotated_cw":
+            tile = np.rot90(tile, 1)
+        elif slot.orientation == "rotated_ccw":
+            tile = np.rot90(tile, -1)
+        elif slot.orientation == "rotated_180":
+            tile = np.rot90(tile, 2)
+        tiles.append(np.ascontiguousarray(tile))
+    return tiles
 
 
 def _format_candidates(candidates: list[TileMatch]) -> str:

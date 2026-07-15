@@ -4,6 +4,8 @@ from recognizer.models import (
     MeldRecognition,
     MeldTileRecognition,
     PlayerMeldRecognition,
+    ObservedTileRecognition,
+    PlayerRiverRecognition,
     RecognitionResult,
 )
 from recognizer.visible_tiles import collect_visible_tiles
@@ -66,6 +68,15 @@ class VisibleTilesTests(unittest.TestCase):
         ])
 
         self.assertEqual(collect_visible_tiles(result), ["1s", "2s", "3s"])
+
+    def test_rivers_append_known_tiles_in_fixed_four_seat_order(self):
+        result = _result(rivers=[
+            PlayerRiverRecognition("left", [ObservedTileRecognition("4s", None)]),
+            PlayerRiverRecognition("self", [ObservedTileRecognition("1s", None)]),
+            PlayerRiverRecognition("across", [ObservedTileRecognition(None, None)]),
+            PlayerRiverRecognition("right", [ObservedTileRecognition("2s", None)]),
+        ])
+        self.assertEqual(collect_visible_tiles(result), ["1s", "2s", "4s"])
 
 
 if __name__ == "__main__":
