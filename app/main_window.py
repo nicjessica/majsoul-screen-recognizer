@@ -101,6 +101,9 @@ class MainWindow(QMainWindow):
         counts_button = QPushButton("设置牌数")
         counts_button.clicked.connect(self.set_tile_counts)
 
+        dora_count_button = QPushButton("设置宝牌张数")
+        dora_count_button.clicked.connect(self.set_dora_tile_count)
+
         meld_structure_button = QPushButton("配置副露结构")
         meld_structure_button.clicked.connect(self.configure_meld_structure)
 
@@ -136,6 +139,7 @@ class MainWindow(QMainWindow):
 
         action_row = QHBoxLayout()
         action_row.addWidget(counts_button)
+        action_row.addWidget(dora_count_button)
         action_row.addWidget(meld_structure_button)
         action_row.addWidget(opponent_meld_structure_button)
         action_row.addWidget(river_structure_button)
@@ -204,7 +208,8 @@ class MainWindow(QMainWindow):
             f"w={layout.draw_region.width:.3f}, h={layout.draw_region.height:.3f}, "
             f"张数={layout.draw_tile_count}; "
             f"宝牌 x={layout.dora_region.x:.3f}, y={layout.dora_region.y:.3f}, "
-            f"w={layout.dora_region.width:.3f}, h={layout.dora_region.height:.3f}; "
+            f"w={layout.dora_region.width:.3f}, h={layout.dora_region.height:.3f}, "
+            f"实际翻开={layout.dora_tile_count}张; "
             f"副露 {meld_text}, 可见张数={layout.meld_tile_count}, "
             f"组数={layout.open_meld_count}, 结构={meld_structure}; "
             f"他家副露 {opponents}; 牌河 {rivers}"
@@ -888,6 +893,32 @@ class MainWindow(QMainWindow):
         self._invalidate_recognition_state()
         self.layout_label.setText(self.layout_text())
         self.status_label.setText("牌数已保存")
+
+    def set_dora_tile_count(self) -> None:
+        layout = self.config.layout
+        value, ok = QInputDialog.getInt(
+            self,
+            "设置宝牌指示牌张数",
+            "输入画面中当前实际翻开的指示牌张数（1-5）。\n"
+            "开杠后每翻开一张就增加 1；框选宝牌区时只包含这些正面牌，避免牌背和空位。",
+            max(1, min(5, layout.dora_tile_count)),
+            1,
+            5,
+            1,
+        )
+        if not ok:
+            return
+        self._apply_dora_tile_count(value)
+
+    def _apply_dora_tile_count(self, value: int) -> None:
+        if not 1 <= value <= 5:
+            raise ValueError("宝牌指示牌张数必须在 1 至 5 之间")
+        layout = self.config.layout
+        layout.dora_tile_count = value
+        save_config(self.config)
+        self._invalidate_recognition_state()
+        self.layout_label.setText(self.layout_text())
+        self.status_label.setText(f"宝牌指示牌张数已保存为 {value}")
 
     def set_recognition_threshold(self) -> None:
         old_value = self.config.recognition.threshold
