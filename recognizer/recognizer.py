@@ -5,8 +5,13 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
-from recognizer.config import AppConfig, RelativeRegion
-from recognizer.models import RecognitionResult, TileMatch
+from recognizer.config import AppConfig, MeldConfig, RelativeRegion
+from recognizer.models import (
+    MeldRecognition,
+    MeldTileRecognition,
+    RecognitionResult,
+    TileMatch,
+)
 from recognizer.templates import TemplateLibrary
 
 
@@ -30,32 +35,36 @@ class TileRecognizer:
 
         hand_tiles, draw_tiles, dora_tiles, meld_tiles = self.extract_tiles(frame_rgb)
 
-        matches: list[TileMatch] = []
+        core_matches: list[TileMatch] = []
         hand: list[str] = []
-        for tile in hand_tiles:
-            match = self._match_checked(tile)
-            matches.append(match)
+        for index, tile in enumerate(hand_tiles, start=1):
+            match = self._match_checked(tile, "手牌", index)
+            core_matches.append(match)
             hand.append(match.name)
 
         draw: str | None = None
         if draw_tiles:
-            draw_match = self._match_checked(draw_tiles[0])
-            matches.append(draw_match)
+            draw_match = self._match_checked(draw_tiles[0], "摸牌", 1)
+            core_matches.append(draw_match)
             draw = draw_match.name
 
         dora: list[str] = []
-        for tile in dora_tiles:
-            match = self._match_checked(tile)
-            matches.append(match)
+        for index, tile in enumerate(dora_tiles, start=1):
+            match = self._match_checked(tile, "宝牌指示牌", index)
+            core_matches.append(match)
             dora.append(match.name)
 
-        meld: list[str] = []
-        for tile in meld_tiles:
-            match = self._match_checked(tile)
-            matches.append(match)
-            meld.append(match.name)
-
-        confidence = sum(match.score for match in matches) / max(len(matches), 1)
+        meld_results, meld_matches = self._recognize_melds(meld_tiles)
+        meld = [
+            tile.name
+            for group in meld_results
+            for tile in group.tiles
+            if tile.name is not None
+        ]
+        meld_errors = [group.error for group in meld_results if group.error]
+        meld_error = "；".join(meld_errors) or None
+        matches = [*core_matches, *meld_matches]
+        confidence = sum(match.score for match in core_matches) / max(len(core_matches), 1)
         return RecognitionResult(
             hand=hand,
             draw=draw,
@@ -63,7 +72,66 @@ class TileRecognizer:
             meld_tiles=meld,
             confidence=confidence,
             matches=matches,
+            meld_error=meld_error,
+            melds=meld_results,
         )
+
+    def _recognize_melds(self, meld_tiles: list[np.ndarray]) -> tuple[list[MeldRecognition], list[TileMatch]]:
+        configs = self.config.layout.melds
+        if not configs and not meld_tiles:
+            return [], []
+        group_sizes = [len(meld.tiles) for meld in configs] if configs else [len(meld_tiles)]
+        group_kinds = [meld.kind for meld in configs] if configs else ["unknown"]
+        results: list[MeldRecognition] = []
+        successful_matches: list[TileMatch] = []
+        offset = 0
+        for group_index, (kind, size) in enumerate(zip(group_kinds, group_sizes), start=1):
+            tile_results: list[MeldTileRecognition] = []
+            group_matches: list[TileMatch] = []
+            errors: list[str] = []
+            for tile_index, tile in enumerate(meld_tiles[offset : offset + size], start=1):
+                candidates = self.templates.match_candidates(tile, limit=2)
+                match = candidates[0]
+                if match.score < self.config.recognition.threshold:
+                    error = (
+                        f"第 {group_index} 组第 {tile_index} 张副露牌置信度过低: "
+                        f"候选 {_format_candidates(candidates)}，"
+                        f"阈值 {self.config.recognition.threshold:.3f}"
+                    )
+                    tile_results.append(
+                        MeldTileRecognition(
+                            name=None,
+                            match=match,
+                            error=error,
+                            candidates=candidates,
+                        )
+                    )
+                    errors.append(error)
+                else:
+                    tile_results.append(
+                        MeldTileRecognition(
+                            name=match.name,
+                            match=match,
+                            candidates=candidates,
+                        )
+                    )
+                    group_matches.append(match)
+                    successful_matches.append(match)
+            offset += size
+            group_confidence = (
+                sum(match.score for match in group_matches) / len(group_matches)
+                if group_matches
+                else None
+            )
+            results.append(
+                MeldRecognition(
+                    kind=kind,
+                    tiles=tile_results,
+                    confidence=group_confidence,
+                    error="；".join(errors) or None,
+                )
+            )
+        return results, successful_matches
 
     def extract_tiles(
         self, frame_rgb: np.ndarray
@@ -82,11 +150,12 @@ class TileRecognizer:
             layout.dora_tile_count,
         )
         meld_tiles: list[np.ndarray] = []
-        if layout.meld_region is not None and layout.meld_tile_count > 0:
-            meld_tiles = split_region(
-                crop_relative(frame_rgb, layout.meld_region),
-                layout.meld_tile_count,
-            )
+        if layout.meld_region is not None:
+            meld_region = crop_relative(frame_rgb, layout.meld_region)
+            if layout.melds:
+                meld_tiles = [tile for group in crop_meld_slots(meld_region, layout.melds) for tile in group]
+            elif layout.meld_tile_count > 0:
+                meld_tiles = split_region(meld_region, layout.meld_tile_count)
         return hand_tiles, draw_tiles, dora_tiles, meld_tiles
 
     def save_debug_tiles(self, frame_rgb: np.ndarray, output_dir: str | Path = "data/debug/last_failed") -> Path:
@@ -102,8 +171,17 @@ class TileRecognizer:
             Image.fromarray(tile).save(output / f"draw_{index:02d}.png")
         for index, tile in enumerate(dora_tiles, start=1):
             Image.fromarray(tile).save(output / f"dora_{index:02d}.png")
-        for index, tile in enumerate(meld_tiles, start=1):
-            Image.fromarray(tile).save(output / f"meld_{index:02d}.png")
+        if self.config.layout.melds:
+            offset = 0
+            for group_index, meld in enumerate(self.config.layout.melds, start=1):
+                for tile_index in range(1, len(meld.tiles) + 1):
+                    Image.fromarray(meld_tiles[offset]).save(
+                        output / f"meld_{group_index:02d}_{tile_index:02d}.png"
+                    )
+                    offset += 1
+        else:
+            for index, tile in enumerate(meld_tiles, start=1):
+                Image.fromarray(tile).save(output / f"meld_{index:02d}.png")
         return output
 
     def save_region_overlay(self, frame_rgb: np.ndarray, output_path: str | Path) -> None:
@@ -115,7 +193,9 @@ class TileRecognizer:
             ("draw", self.config.layout.draw_region, (60, 180, 255)),
             ("dora", self.config.layout.dora_region, (70, 220, 100)),
         ]
-        if self.config.layout.meld_region is not None and self.config.layout.meld_tile_count > 0:
+        if self.config.layout.meld_region is not None and (
+            self.config.layout.meld_tile_count > 0 or self.config.layout.melds
+        ):
             regions.append(("meld", self.config.layout.meld_region, (255, 190, 60)))
 
         for label, region, color in regions:
@@ -128,11 +208,13 @@ class TileRecognizer:
 
         image.save(output_path)
 
-    def _match_checked(self, tile_rgb: np.ndarray) -> TileMatch:
-        match = self.templates.match(tile_rgb)
+    def _match_checked(self, tile_rgb: np.ndarray, area: str, index: int) -> TileMatch:
+        candidates = self.templates.match_candidates(tile_rgb, limit=2)
+        match = candidates[0]
         if match.score < self.config.recognition.threshold:
             raise RecognitionError(
-                f"识别置信度过低: {match.name}={match.score:.3f}，"
+                f"{area}第 {index} 张识别置信度过低: "
+                f"候选 {_format_candidates(candidates)}，"
                 f"阈值 {self.config.recognition.threshold:.3f}。请检查模板或区域配置。"
             )
         return match
@@ -164,3 +246,22 @@ def split_region(region: np.ndarray, count: int) -> list[np.ndarray]:
     if len(tiles) != count:
         raise RecognitionError(f"牌区切分失败: expected={count}, actual={len(tiles)}")
     return tiles
+
+
+def crop_meld_slots(region: np.ndarray, melds: list[MeldConfig]) -> list[list[np.ndarray]]:
+    groups: list[list[np.ndarray]] = []
+    for meld in melds:
+        tiles: list[np.ndarray] = []
+        for slot in meld.tiles:
+            tile = crop_relative(region, slot.region)
+            if slot.orientation == "rotated_cw":
+                tile = np.rot90(tile, 1)
+            elif slot.orientation == "rotated_ccw":
+                tile = np.rot90(tile, -1)
+            tiles.append(np.ascontiguousarray(tile))
+        groups.append(tiles)
+    return groups
+
+
+def _format_candidates(candidates: list[TileMatch]) -> str:
+    return "、".join(f"{match.name}={match.score:.3f}" for match in candidates)

@@ -34,20 +34,24 @@ class TemplateLibrary:
             self.templates[path.stem] = image
 
     def match(self, tile_rgb: np.ndarray) -> TileMatch:
+        return self.match_candidates(tile_rgb, limit=1)[0]
+
+    def match_candidates(self, tile_rgb: np.ndarray, limit: int = 2) -> list[TileMatch]:
         if not self.templates:
             raise ValueError(f"模板目录为空: {self.templates_dir}")
+        if limit <= 0:
+            return []
 
         import cv2
 
         tile_bgr = cv2.cvtColor(tile_rgb, cv2.COLOR_RGB2BGR)
-        best = TileMatch(name="", score=-1.0)
-
+        candidates: list[TileMatch] = []
         for name, template in self.templates.items():
             score = match_score(tile_bgr, template)
-            if score > best.score:
-                best = TileMatch(name=name, score=score)
+            candidates.append(TileMatch(name=name, score=score))
 
-        return best
+        candidates.sort(key=lambda match: (-match.score, match.name))
+        return candidates[:limit]
 
 
 def match_score(tile_bgr: np.ndarray, template_bgr: np.ndarray) -> float:

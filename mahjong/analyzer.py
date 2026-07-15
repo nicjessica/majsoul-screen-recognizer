@@ -21,18 +21,24 @@ class HandAnalysis:
     recommendations: list[DiscardRecommendation]
 
 
-def analyze_hand(tiles: list[str]) -> HandAnalysis:
+def analyze_hand(tiles: list[str], open_meld_count: int = 0) -> HandAnalysis:
+    if not 0 <= open_meld_count <= 4:
+        raise ValueError("副露组数必须在 0 到 4 之间")
     normalized = [normalize_tile(tile) for tile in tiles]
     counts = tiles_to_counts(normalized)
     tile_count = sum(counts)
-    if tile_count not in (13, 14):
-        raise ValueError(f"需要 13 或 14 张牌，当前 {tile_count} 张")
+    expected_counts = (13 - 3 * open_meld_count, 14 - 3 * open_meld_count)
+    if tile_count not in expected_counts:
+        raise ValueError(
+            f"{open_meld_count} 组副露需要 {expected_counts[0]} 或 {expected_counts[1]} 张暗牌，"
+            f"当前 {tile_count} 张"
+        )
 
-    current_shanten = calculate_shanten(counts)
+    current_shanten = calculate_shanten(counts, open_meld_count)
     recommendations: list[DiscardRecommendation] = []
 
-    if tile_count == 13:
-        effective, count = effective_draws(counts, current_shanten)
+    if tile_count == expected_counts[0]:
+        effective, count = effective_draws(counts, current_shanten, open_meld_count)
         recommendations.append(
             DiscardRecommendation(
                 discard="-",
@@ -50,8 +56,8 @@ def analyze_hand(tiles: list[str]) -> HandAnalysis:
             continue
         after_discard = counts.copy()
         after_discard[discard_index] -= 1
-        resulting = calculate_shanten(after_discard)
-        effective, count = effective_draws(after_discard, resulting)
+        resulting = calculate_shanten(after_discard, open_meld_count)
+        effective, count = effective_draws(after_discard, resulting, open_meld_count)
         recommendations.append(
             DiscardRecommendation(
                 discard=discard,
@@ -68,7 +74,9 @@ def analyze_hand(tiles: list[str]) -> HandAnalysis:
     return HandAnalysis(shanten=current_shanten, recommendations=recommendations)
 
 
-def effective_draws(counts: list[int], base_shanten: int) -> tuple[list[str], int]:
+def effective_draws(
+    counts: list[int], base_shanten: int, open_meld_count: int = 0
+) -> tuple[list[str], int]:
     effective: list[str] = []
     total_remaining = 0
 
@@ -77,7 +85,7 @@ def effective_draws(counts: list[int], base_shanten: int) -> tuple[list[str], in
             continue
         test_counts = counts.copy()
         test_counts[index] += 1
-        if calculate_shanten(test_counts) < base_shanten:
+        if calculate_shanten(test_counts, open_meld_count) < base_shanten:
             effective.append(INDEX_TO_TILE[index])
             total_remaining += 4 - counts[index]
 
@@ -90,4 +98,3 @@ def _reason(current_shanten: int, resulting_shanten: int, ukeire_count: int) -> 
     if resulting_shanten == current_shanten:
         return f"保持 {resulting_shanten} 向听，有效牌 {ukeire_count} 枚"
     return f"向听后退到 {resulting_shanten}，通常不优先"
-

@@ -23,7 +23,9 @@
     "hand_tile_count": 13,
     "draw_tile_count": 1,
     "dora_tile_count": 1,
-    "meld_tile_count": 0
+    "meld_tile_count": 0,
+    "open_meld_count": 0,
+    "melds": []
   },
   "recognition": {
     "threshold": 0.78
@@ -31,4 +33,3 @@
   "templates_dir": "data/templates",
   "capture_interval_seconds": 0.75
 }
-

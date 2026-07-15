@@ -21,9 +21,19 @@ from PySide6.QtWidgets import (
 from app.screen_select import ScreenRegionSelector
 from mahjong.analyzer import analyze_hand
 from recognizer.capture import ScreenCapture
-from recognizer.config import RelativeRegion, load_config, save_config
+from recognizer.config import (
+    MELD_KINDS,
+    MELD_ORIENTATIONS,
+    MeldConfig,
+    MeldTileSlotConfig,
+    RelativeRegion,
+    load_config,
+    save_config,
+    validate_config,
+)
 from recognizer.geometry import ScreenRegion
 from recognizer.recognizer import RecognitionError, TileRecognizer
+from recognizer.stability import KeyRegionSnapshot, RecognitionStabilizer
 from recognizer.template_builder import build_templates_from_screenshot
 
 
@@ -40,6 +50,12 @@ class MainWindow(QMainWindow):
         self.pending_region: str | None = None
         self.capture_in_progress = False
         self.capture_hidden = False
+        self.force_publish_current = False
+        self.stability = RecognitionStabilizer(required_observations=3)
+        self.selector_completed = False
+        self.pending_melds: list[MeldConfig] | None = None
+        self.pending_meld_slots: list[tuple[int, int]] = []
+        self.resume_timer_after_meld_config = False
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.recognize_once)
@@ -68,6 +84,12 @@ class MainWindow(QMainWindow):
         counts_button = QPushButton("设置牌数")
         counts_button.clicked.connect(self.set_tile_counts)
 
+        meld_structure_button = QPushButton("配置副露结构")
+        meld_structure_button.clicked.connect(self.configure_meld_structure)
+
+        threshold_button = QPushButton("设置识别阈值")
+        threshold_button.clicked.connect(self.set_recognition_threshold)
+
         self.start_button = QPushButton("开始识别")
         self.start_button.clicked.connect(self.toggle_recognition)
 
@@ -89,6 +111,8 @@ class MainWindow(QMainWindow):
 
         action_row = QHBoxLayout()
         action_row.addWidget(counts_button)
+        action_row.addWidget(meld_structure_button)
+        action_row.addWidget(threshold_button)
         action_row.addWidget(self.start_button)
         action_row.addWidget(once_button)
         action_row.addWidget(reload_button)
@@ -113,7 +137,7 @@ class MainWindow(QMainWindow):
             "使用步骤:\n"
             "1. 点击“框选画面”，选择整个雀魂游戏画面。\n"
             "2. 框选手牌区、摸牌、宝牌；有副露时再框选副露区。\n"
-            "3. 点击“设置牌数”，设置手牌区、摸牌区和副露区牌张数。\n"
+            "3. 点击“设置牌数”，设置手牌、摸牌、副露可见牌及副露组数。\n"
             "4. 点击“识别一次”或“开始识别”。\n\n"
             f"当前模板目录: {template_dir.resolve()}\n"
             "副露第一版只按从左到右识别牌，不判断吃、碰、杠和横置来源。\n"
@@ -134,6 +158,7 @@ class MainWindow(QMainWindow):
         meld_text = "未设置"
         if meld is not None:
             meld_text = f"x={meld.x:.3f}, y={meld.y:.3f}, w={meld.width:.3f}, h={meld.height:.3f}"
+        meld_structure = ",".join(item.kind for item in layout.melds) or "等宽回退"
         return (
             "牌区比例: "
             f"手牌 x={layout.hand_region.x:.3f}, y={layout.hand_region.y:.3f}, "
@@ -144,7 +169,8 @@ class MainWindow(QMainWindow):
             f"张数={layout.draw_tile_count}; "
             f"宝牌 x={layout.dora_region.x:.3f}, y={layout.dora_region.y:.3f}, "
             f"w={layout.dora_region.width:.3f}, h={layout.dora_region.height:.3f}; "
-            f"副露 {meld_text}, 张数={layout.meld_tile_count}"
+            f"副露 {meld_text}, 可见张数={layout.meld_tile_count}, "
+            f"组数={layout.open_meld_count}, 结构={meld_structure}"
         )
 
     def select_game_region(self) -> None:
@@ -155,6 +181,10 @@ class MainWindow(QMainWindow):
         if self.config.game_region is None:
             QMessageBox.warning(self, "缺少画面区域", "请先点击“框选画面”。")
             return
+        errors = validate_config(self.config)
+        if errors:
+            QMessageBox.warning(self, "配置无效", "\n".join(errors))
+            return
         self.pending_region = region_kind
         self.open_region_selector()
 
@@ -162,10 +192,25 @@ class MainWindow(QMainWindow):
         self.hide()
         self.selector = ScreenRegionSelector()
         self.selector.region_selected.connect(self.on_region_selected)
-        self.selector.destroyed.connect(self.show)
+        self.selector_completed = False
+        self.selector.destroyed.connect(self.on_selector_destroyed)
         QTimer.singleShot(150, self.selector.show)
 
+    def on_selector_destroyed(self) -> None:
+        if self.pending_region == "meld_slot" and not self.selector_completed:
+            self.pending_melds = None
+            self.pending_meld_slots = []
+            self.pending_region = None
+            self.status_label.setText("已取消副露结构配置，原配置未修改")
+            self._restore_after_meld_config()
+        elif self.pending_region != "meld_slot":
+            self.show()
+
     def on_region_selected(self, region: ScreenRegion) -> None:
+        self.selector_completed = True
+        if self.pending_region == "meld_slot":
+            self.on_meld_slot_selected(region)
+            return
         if self.pending_region == "game":
             self.config.game_region = region
             message = "画面区域已保存"
@@ -190,10 +235,198 @@ class MainWindow(QMainWindow):
             return
 
         save_config(self.config)
-        self.recognizer = None
+        self._invalidate_recognition_state()
         self.region_label.setText(self.region_text())
         self.layout_label.setText(self.layout_text())
         self.status_label.setText(message)
+
+    def configure_meld_structure(self) -> None:
+        if self.config.game_region is None or self.config.layout.meld_region is None:
+            QMessageBox.warning(self, "缺少副露区域", "请先框选游戏画面和副露区。")
+            return
+
+        current = self._format_meld_structure(self.config.layout.melds)
+        text, ok = QInputDialog.getMultiLineText(
+            self,
+            "配置副露结构",
+            "每行一组：类型 牌1方向 牌2方向 ...\n"
+            "类型：chi pon minkan ankan kakan unknown\n"
+            "方向：upright rotated_cw rotated_ccw，可追加 @叠放层。\n"
+            "示例：pon rotated_cw upright upright",
+            current,
+        )
+        if not ok:
+            return
+        try:
+            melds = self._parse_meld_structure(text)
+        except ValueError as exc:
+            QMessageBox.warning(self, "副露结构无效", str(exc))
+            return
+        if not melds:
+            self.config.layout.melds = []
+            save_config(self.config)
+            self._invalidate_recognition_state()
+            self.layout_label.setText(self.layout_text())
+            self.status_label.setText("已清除结构化副露，恢复等宽识别")
+            return
+
+        concealed_count = self.config.layout.hand_tile_count + self.config.layout.draw_tile_count
+        expected_counts = (13 - 3 * len(melds), 14 - 3 * len(melds))
+        if concealed_count not in expected_counts:
+            QMessageBox.warning(
+                self,
+                "牌数不一致",
+                f"{len(melds)} 组副露时，暗牌总数应为 "
+                f"{expected_counts[0]} 或 {expected_counts[1]}，当前为 {concealed_count}。",
+            )
+            return
+
+        self.pending_melds = melds
+        self.pending_meld_slots = [
+            (group_index, tile_index)
+            for group_index, meld in enumerate(melds)
+            for tile_index in range(len(meld.tiles))
+        ]
+        self.resume_timer_after_meld_config = self.timer.isActive()
+        if self.resume_timer_after_meld_config:
+            self.timer.stop()
+            self.start_button.setText("开始识别")
+        self._select_next_meld_slot()
+
+    def _select_next_meld_slot(self) -> None:
+        if not self.pending_meld_slots:
+            self._finish_meld_structure()
+            return
+        group_index, tile_index = self.pending_meld_slots[0]
+        assert self.pending_melds is not None
+        meld = self.pending_melds[group_index]
+        self.pending_region = "meld_slot"
+        self.status_label.setText(
+            f"请框选第 {group_index + 1}/{len(self.pending_melds)} 组（{meld.kind}）"
+            f"第 {tile_index + 1}/{len(meld.tiles)} 张，方向 {meld.tiles[tile_index].orientation}"
+        )
+        self.open_region_selector()
+
+    def on_meld_slot_selected(self, selected: ScreenRegion) -> None:
+        if self.pending_melds is None or not self.pending_meld_slots:
+            return
+        relative = self.to_relative_meld_region(selected)
+        if relative is None:
+            QMessageBox.warning(self, "区域无效", "牌槽必须位于已框选的副露区内。")
+            QTimer.singleShot(100, self._select_next_meld_slot)
+            return
+        group_index, tile_index = self.pending_meld_slots.pop(0)
+        self.pending_melds[group_index].tiles[tile_index].region = relative
+        QTimer.singleShot(100, self._select_next_meld_slot)
+
+    def _finish_meld_structure(self) -> None:
+        if self.pending_melds is None:
+            return
+        old_melds = self.config.layout.melds
+        old_group_count = self.config.layout.open_meld_count
+        old_tile_count = self.config.layout.meld_tile_count
+        self.config.layout.melds = self.pending_melds
+        self.config.layout.open_meld_count = len(self.pending_melds)
+        self.config.layout.meld_tile_count = sum(len(meld.tiles) for meld in self.pending_melds)
+        errors = validate_config(self.config)
+        if errors:
+            self.config.layout.melds = old_melds
+            self.config.layout.open_meld_count = old_group_count
+            self.config.layout.meld_tile_count = old_tile_count
+            QMessageBox.warning(self, "副露结构无效", "\n".join(errors))
+        else:
+            save_config(self.config)
+            self._invalidate_recognition_state()
+            self.layout_label.setText(self.layout_text())
+            self.status_label.setText("副露结构和逐张牌槽已保存")
+        self.pending_melds = None
+        self.pending_meld_slots = []
+        self.pending_region = None
+        self._restore_after_meld_config()
+
+    def _restore_after_meld_config(self) -> None:
+        self.show()
+        if self.resume_timer_after_meld_config:
+            self.timer.start(int(self.config.capture_interval_seconds * 1000))
+            self.start_button.setText("停止识别")
+        self.resume_timer_after_meld_config = False
+
+    @staticmethod
+    def _parse_meld_structure(text: str) -> list[MeldConfig]:
+        expected_slots = {"chi": 3, "pon": 3, "minkan": 4, "ankan": 4, "kakan": 4}
+        melds: list[MeldConfig] = []
+        for line_number, raw_line in enumerate(text.splitlines(), start=1):
+            parts = raw_line.split()
+            if not parts:
+                continue
+            kind = parts[0].lower()
+            if kind not in MELD_KINDS:
+                raise ValueError(f"第 {line_number} 行副露类型无效: {kind}")
+            orientations = parts[1:]
+            required = expected_slots.get(kind)
+            if required is not None and len(orientations) != required:
+                raise ValueError(f"第 {line_number} 行 {kind} 需要 {required} 张牌的方向")
+            if kind == "unknown" and not orientations:
+                raise ValueError(f"第 {line_number} 行 unknown 至少需要一张牌")
+            slots: list[MeldTileSlotConfig] = []
+            for token in orientations:
+                orientation, separator, level_text = token.partition("@")
+                if orientation not in MELD_ORIENTATIONS:
+                    raise ValueError(f"第 {line_number} 行方向无效: {orientation}")
+                try:
+                    stack_level = int(level_text) if separator else 0
+                except ValueError as exc:
+                    raise ValueError(f"第 {line_number} 行叠放层必须是整数: {token}") from exc
+                if stack_level < 0:
+                    raise ValueError(f"第 {line_number} 行叠放层不能小于 0")
+                slots.append(
+                    MeldTileSlotConfig(
+                        region=RelativeRegion(0, 0, 1, 1),
+                        orientation=orientation,
+                        stack_level=stack_level,
+                    )
+                )
+            melds.append(MeldConfig(kind=kind, tiles=slots))
+        if len(melds) > 4:
+            raise ValueError("副露组数不能超过 4")
+        return melds
+
+    @staticmethod
+    def _format_meld_structure(melds: list[MeldConfig]) -> str:
+        return "\n".join(
+            " ".join(
+                [meld.kind]
+                + [
+                    slot.orientation + (f"@{slot.stack_level}" if slot.stack_level else "")
+                    for slot in meld.tiles
+                ]
+            )
+            for meld in melds
+        )
+
+    def to_relative_meld_region(self, selected: ScreenRegion) -> RelativeRegion | None:
+        game = self.config.game_region
+        meld = self.config.layout.meld_region
+        if game is None or meld is None:
+            return None
+        parent = ScreenRegion(
+            left=game.left + round(meld.x * game.width),
+            top=game.top + round(meld.y * game.height),
+            width=round(meld.width * game.width),
+            height=round(meld.height * game.height),
+        )
+        left = max(selected.left, parent.left)
+        top = max(selected.top, parent.top)
+        right = min(selected.left + selected.width, parent.left + parent.width)
+        bottom = min(selected.top + selected.height, parent.top + parent.height)
+        if right <= left or bottom <= top:
+            return None
+        return RelativeRegion(
+            x=(left - parent.left) / parent.width,
+            y=(top - parent.top) / parent.height,
+            width=(right - left) / parent.width,
+            height=(bottom - top) / parent.height,
+        )
 
     def to_relative_region(self, selected: ScreenRegion) -> RelativeRegion | None:
         game = self.config.game_region
@@ -219,34 +452,112 @@ class MainWindow(QMainWindow):
         text, ok = QInputDialog.getText(
             self,
             "设置牌数",
-            "输入“手牌区张数 摸牌张数 副露区可见张数”。\n"
-            "闭门摸牌: 13 1 0；副露后待切: 10 0 3；杠后补牌: 10 1 3",
-            text=f"{layout.hand_tile_count} {layout.draw_tile_count} {layout.meld_tile_count}",
+            "输入“手牌区张数 摸牌张数 副露区可见张数 副露组数”。\n"
+            "闭门摸牌: 13 1 0 0；副露后待切: 10 0 3 1；杠后补牌: 10 1 4 1",
+            text=(
+                f"{layout.hand_tile_count} {layout.draw_tile_count} "
+                f"{layout.meld_tile_count} {layout.open_meld_count}"
+            ),
         )
         if not ok:
             return
         parts = text.split()
-        if len(parts) != 3:
-            QMessageBox.warning(self, "格式错误", "请按格式输入三个数字，例如 10 0 3。")
+        if len(parts) != 4:
+            QMessageBox.warning(self, "格式错误", "请按格式输入四个数字，例如 10 0 3 1。")
             return
         try:
             hand_count = int(parts[0])
             draw_count = int(parts[1])
             meld_count = int(parts[2])
+            open_meld_count = int(parts[3])
         except ValueError:
             QMessageBox.warning(self, "格式错误", "牌数必须是数字。")
             return
-        if not (1 <= hand_count <= 13 and 0 <= draw_count <= 1 and 0 <= meld_count <= 16):
-            QMessageBox.warning(self, "牌数无效", "手牌区张数应为 1-13，摸牌张数应为 0 或 1，副露区可见张数应为 0-16。")
+        if not (
+            1 <= hand_count <= 13
+            and 0 <= draw_count <= 1
+            and 0 <= meld_count <= 16
+            and 0 <= open_meld_count <= 4
+        ):
+            QMessageBox.warning(
+                self,
+                "牌数无效",
+                "手牌区张数应为 1-13，摸牌张数应为 0 或 1，"
+                "副露区可见张数应为 0-16，副露组数应为 0-4。",
+            )
+            return
+        concealed_count = hand_count + draw_count
+        expected_counts = (13 - 3 * open_meld_count, 14 - 3 * open_meld_count)
+        if concealed_count not in expected_counts:
+            QMessageBox.warning(
+                self,
+                "牌数不一致",
+                f"{open_meld_count} 组副露时，暗牌总数应为 "
+                f"{expected_counts[0]} 或 {expected_counts[1]}，当前为 {concealed_count}。",
+            )
             return
 
-        self.config.layout.hand_tile_count = hand_count
-        self.config.layout.draw_tile_count = draw_count
-        self.config.layout.meld_tile_count = meld_count
+        if layout.melds and meld_count != sum(len(meld.tiles) for meld in layout.melds):
+            QMessageBox.warning(
+                self,
+                "副露结构不一致",
+                "副露可见张数与已配置的逐张牌槽数量不一致。请先重新配置副露结构。",
+            )
+            return
+        old_counts = (
+            layout.hand_tile_count,
+            layout.draw_tile_count,
+            layout.meld_tile_count,
+            layout.open_meld_count,
+        )
+        layout.hand_tile_count = hand_count
+        layout.draw_tile_count = draw_count
+        layout.meld_tile_count = meld_count
+        layout.open_meld_count = open_meld_count
+        errors = validate_config(self.config)
+        if errors:
+            (
+                layout.hand_tile_count,
+                layout.draw_tile_count,
+                layout.meld_tile_count,
+                layout.open_meld_count,
+            ) = old_counts
+            QMessageBox.warning(self, "配置无效", "\n".join(errors))
+            return
         save_config(self.config)
-        self.recognizer = None
+        self._invalidate_recognition_state()
         self.layout_label.setText(self.layout_text())
         self.status_label.setText("牌数已保存")
+
+    def set_recognition_threshold(self) -> None:
+        old_value = self.config.recognition.threshold
+        value, ok = QInputDialog.getDouble(
+            self,
+            "设置识别阈值",
+            "输入 0.50 至 0.99。阈值越高越严格；请优先修正框选和模板，而不是大幅降低阈值。",
+            self.config.recognition.threshold,
+            0.50,
+            0.99,
+            3,
+        )
+        if not ok:
+            return
+        self.config.recognition.threshold = value
+        errors = validate_config(self.config)
+        if errors:
+            self.config.recognition.threshold = old_value
+            QMessageBox.warning(self, "配置无效", "\n".join(errors))
+            return
+        save_config(self.config)
+        self._invalidate_recognition_state()
+        self.status_label.setText(f"识别阈值已保存为 {value:.3f}")
+
+    def _invalidate_recognition_state(self, clear_recognizer: bool = True) -> None:
+        if clear_recognizer:
+            self.recognizer = None
+        self.stability.reset()
+        if hasattr(self, "output"):
+            self.output.setPlainText("配置或模板已变更，旧识别结果已失效，请重新识别。")
 
     def toggle_recognition(self) -> None:
         if self.timer.isActive():
@@ -264,6 +575,7 @@ class MainWindow(QMainWindow):
         self.status_label.setText("识别中")
 
     def reload_templates(self) -> None:
+        self._invalidate_recognition_state()
         try:
             self.config = load_config()
             self.recognizer = TileRecognizer(self.config)
@@ -294,6 +606,7 @@ class MainWindow(QMainWindow):
             return
 
         names = text.split()
+        self._invalidate_recognition_state()
         try:
             saved = build_templates_from_screenshot(
                 screenshot_path=screenshot_path,
@@ -316,7 +629,13 @@ class MainWindow(QMainWindow):
             return
         if self.capture_in_progress:
             return
+        errors = validate_config(self.config)
+        if errors:
+            self.status_label.setText("配置无效")
+            self.output.setPlainText("\n".join(errors))
+            return
 
+        self.force_publish_current = self.sender() is not self.timer
         self.capture_in_progress = True
         self.capture_hidden = self.should_hide_for_capture()
         if self.capture_hidden:
@@ -350,9 +669,17 @@ class MainWindow(QMainWindow):
             if self.recognizer is None:
                 self.recognizer = TileRecognizer(self.config)
             frame = self.capture.capture_region(self.config.game_region)
-            result = self.recognizer.recognize(frame)
+            snapshot = KeyRegionSnapshot.from_frame(frame, self.config.layout)
+            if self.force_publish_current or self.stability.needs_recognition(snapshot):
+                raw_result = self.recognizer.recognize(frame)
+                if self.force_publish_current:
+                    update = self.stability.publish_success(snapshot, raw_result)
+                else:
+                    update = self.stability.observe_success(snapshot, raw_result)
+            else:
+                update = self.stability.observe_reused()
         except RecognitionError as exc:
-            self.status_label.setText("识别失败")
+            update = self.stability.observe_error()
             debug_text = ""
             if frame is not None and self.recognizer is not None:
                 try:
@@ -360,7 +687,16 @@ class MainWindow(QMainWindow):
                     debug_text = f"\n\n已保存本次裁剪结果到:\n{debug_dir.resolve()}"
                 except Exception as debug_exc:
                     debug_text = f"\n\n保存诊断图片失败: {type(debug_exc).__name__}: {debug_exc}"
-            self.output.setPlainText(str(exc) + debug_text)
+            if update.published_result is not None:
+                self.status_label.setText("当前帧识别失败；下方为上次稳定结果")
+                self.output.setPlainText(
+                    f"当前帧错误: {exc}{debug_text}\n\n"
+                    "注意：以下结果可能已过时。\n\n"
+                    + self._format_result_text(update.published_result, "上次稳定识别结果")
+                )
+            else:
+                self.status_label.setText("识别失败")
+                self.output.setPlainText(str(exc) + debug_text)
             self.finish_capture_display()
             return
         except Exception as exc:  # pragma: no cover - UI safety net
@@ -369,30 +705,57 @@ class MainWindow(QMainWindow):
             self.finish_capture_display()
             return
 
+        if update.published_result is None:
+            self.status_label.setText(
+                f"识别成功，正在确认画面稳定性（{update.pending_count}/3）"
+            )
+            self.output.setPlainText("尚无稳定结果，请保持画面不变。")
+        elif update.just_published:
+            prefix = "单次识别完成" if self.force_publish_current else "画面已稳定，识别完成"
+            self._display_result(update.published_result, prefix)
+        elif update.pending_count < self.stability.required_observations:
+            self.status_label.setText(
+                f"检测到新画面，正在确认（{update.pending_count}/3）；下方为上次稳定结果"
+            )
+        elif update.reused:
+            self.status_label.setText("画面未变化，沿用稳定结果（已跳过重复匹配）")
+        self.finish_capture_display()
+
+    def _display_result(self, result, status_prefix: str) -> None:
+        assert self.recognizer is not None
+        status = (
+            f"{status_prefix}，平均置信度 {result.confidence:.3f}，"
+            f"模板 {len(self.recognizer.templates.templates)} 个"
+        )
+        if result.meld_error:
+            status += "；副露部分未知但牌效分析已继续"
+        self.status_label.setText(status)
+        self.output.setPlainText(self._format_result_text(result))
+
+    def _format_result_text(self, result, title: str = "识别结果") -> str:
         tiles = list(result.hand)
         if result.draw:
             tiles.append(result.draw)
 
         try:
-            analysis = analyze_hand(tiles)
+            analysis = analyze_hand(tiles, open_meld_count=self.config.layout.open_meld_count)
             analysis_text = self.format_analysis(analysis)
         except ValueError as exc:
             analysis_text = f"牌效分析不可用: {exc}"
 
-        self.status_label.setText(
-            f"识别完成，平均置信度 {result.confidence:.3f}，模板 {len(self.recognizer.templates.templates)} 个"
-        )
-        self.output.setPlainText(
-            "识别结果\n"
+        meld_text = " ".join(result.meld_tiles) if result.meld_tiles else "-"
+        if result.meld_error:
+            meld_text += f"（部分未知：{result.meld_error}）"
+        return (
+            f"{title}\n"
             f"手牌: {' '.join(result.hand) if result.hand else '-'}\n"
             f"摸牌: {result.draw or '-'}\n"
             f"宝牌: {' '.join(result.dora_indicators) if result.dora_indicators else '-'}\n"
-            f"副露: {' '.join(result.meld_tiles) if result.meld_tiles else '-'}\n"
+            f"副露: {meld_text}\n"
             f"置信度: {result.confidence:.3f}\n\n"
             "牌效分析\n"
             f"{analysis_text}"
         )
-        self.finish_capture_display()
 
     def finish_capture_display(self) -> None:
         self.capture_in_progress = False

@@ -1,20 +1,18 @@
 from __future__ import annotations
 
-from functools import lru_cache
-
-
-def calculate_shanten(counts: list[int]) -> int:
+def calculate_shanten(counts: list[int], open_meld_count: int = 0) -> int:
+    if not 0 <= open_meld_count <= 4:
+        raise ValueError("副露组数必须在 0 到 4 之间")
     total = sum(counts)
     if total == 0:
         raise ValueError("没有可分析的牌")
-    return min(
-        normal_shanten(tuple(counts)),
-        chiitoitsu_shanten(counts),
-        kokushi_shanten(counts),
-    )
+    normal = normal_shanten(tuple(counts), open_meld_count)
+    if open_meld_count:
+        return normal
+    return min(normal, chiitoitsu_shanten(counts), kokushi_shanten(counts))
 
 
-def normal_shanten(counts: tuple[int, ...]) -> int:
+def normal_shanten(counts: tuple[int, ...], open_meld_count: int = 0) -> int:
     min_shanten = 8
 
     def dfs(current: list[int], index: int, melds: int, pairs: int, taatsu: int) -> None:
@@ -73,7 +71,7 @@ def normal_shanten(counts: tuple[int, ...]) -> int:
         dfs(current, index, melds, pairs, taatsu)
         current[index] += 1
 
-    dfs(list(counts), 0, 0, 0, 0)
+    dfs(list(counts), 0, open_meld_count, 0, 0)
     return min_shanten
 
 
@@ -100,4 +98,3 @@ def _can_ryanmen(counts: list[int], index: int) -> bool:
 
 def _can_kanchan(counts: list[int], index: int) -> bool:
     return index < 27 and index % 9 <= 6 and counts[index + 2] > 0
-
