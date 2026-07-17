@@ -3,10 +3,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QFrame,
+    QGridLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -14,6 +16,9 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QPlainTextEdit,
+    QScrollArea,
+    QSizePolicy,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -48,7 +53,8 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("雀魂画面识别与牌效分析")
-        self.resize(960, 680)
+        self.resize(1180, 760)
+        self.setMinimumSize(980, 640)
 
         self.config = load_config()
         self.capture: ScreenCapture | None = None
@@ -72,9 +78,15 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self.recognize_once)
 
         self.region_label = QLabel(self.region_text())
+        self.region_label.setObjectName("summaryText")
+        self.region_label.setWordWrap(True)
         self.layout_label = QLabel(self.layout_text())
+        self.layout_label.setObjectName("summaryText")
+        self.layout_label.setWordWrap(True)
         self.status_label = QLabel("未开始")
+        self.status_label.setObjectName("statusPill")
         self.output = QPlainTextEdit()
+        self.output.setObjectName("resultOutput")
         self.output.setReadOnly(True)
 
         select_game_button = QPushButton("框选画面")
@@ -117,6 +129,7 @@ class MainWindow(QMainWindow):
         threshold_button.clicked.connect(self.set_recognition_threshold)
 
         self.start_button = QPushButton("开始识别")
+        self.start_button.setObjectName("primaryButton")
         self.start_button.clicked.connect(self.toggle_recognition)
 
         once_button = QPushButton("识别一次")
@@ -128,39 +141,163 @@ class MainWindow(QMainWindow):
         build_templates_button = QPushButton("从截图裁模板")
         build_templates_button.clicked.connect(self.build_templates)
 
-        region_row = QHBoxLayout()
-        region_row.addWidget(select_game_button)
-        region_row.addWidget(select_hand_button)
-        region_row.addWidget(select_draw_button)
-        region_row.addWidget(select_dora_button)
-        region_row.addWidget(select_meld_button)
-        region_row.addWidget(select_opponent_meld_button)
-        region_row.addWidget(select_river_button)
+        for button in (
+            select_game_button, select_hand_button, select_draw_button,
+            select_dora_button, select_meld_button, select_opponent_meld_button,
+            select_river_button, counts_button, dora_count_button,
+            meld_structure_button, opponent_meld_structure_button,
+            river_structure_button, threshold_button, once_button,
+            reload_button, build_templates_button,
+        ):
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-        action_row = QHBoxLayout()
-        action_row.addWidget(counts_button)
-        action_row.addWidget(dora_count_button)
-        action_row.addWidget(meld_structure_button)
-        action_row.addWidget(opponent_meld_structure_button)
-        action_row.addWidget(river_structure_button)
-        action_row.addWidget(threshold_button)
-        action_row.addWidget(self.start_button)
-        action_row.addWidget(once_button)
-        action_row.addWidget(reload_button)
-        action_row.addWidget(build_templates_button)
+        eyebrow = QLabel("LOCAL VISION · TILE EFFICIENCY")
+        eyebrow.setObjectName("eyebrow")
+        title = QLabel("雀魂画面识别")
+        title.setObjectName("appTitle")
+        subtitle = QLabel("本地截图识别与牌效分析控制台")
+        subtitle.setObjectName("appSubtitle")
+
+        brand = QVBoxLayout()
+        brand.setSpacing(2)
+        brand.addWidget(eyebrow)
+        brand.addWidget(title)
+        brand.addWidget(subtitle)
+
+        run_bar = QHBoxLayout()
+        run_bar.setSpacing(10)
+        run_bar.addLayout(brand, 1)
+        run_bar.addWidget(self.status_label)
+        run_bar.addWidget(once_button)
+        run_bar.addWidget(self.start_button)
+
+        region_card, region_body = self._make_card("01  识别区域", "按当前游戏画面逐项框选")
+        region_grid = QGridLayout()
+        region_grid.setSpacing(8)
+        for index, button in enumerate((
+            select_game_button, select_hand_button, select_draw_button,
+            select_dora_button, select_meld_button, select_opponent_meld_button,
+            select_river_button,
+        )):
+            region_grid.addWidget(button, index // 2, index % 2)
+        region_body.addLayout(region_grid)
+
+        structure_card, structure_body = self._make_card("02  牌面结构", "配置张数、牌槽与识别条件")
+        structure_grid = QGridLayout()
+        structure_grid.setSpacing(8)
+        for index, button in enumerate((
+            counts_button, dora_count_button, meld_structure_button,
+            opponent_meld_structure_button, river_structure_button,
+            threshold_button,
+        )):
+            structure_grid.addWidget(button, index // 2, index % 2)
+        structure_body.addLayout(structure_grid)
+
+        template_card, template_body = self._make_card("03  模板工具", "维护本机牌面模板库")
+        template_row = QHBoxLayout()
+        template_row.setSpacing(8)
+        template_row.addWidget(reload_button)
+        template_row.addWidget(build_templates_button)
+        template_body.addLayout(template_row)
+
+        summary_card, summary_body = self._make_card("当前配置", "保存后立即用于下一次识别")
+        summary_body.addWidget(self.region_label)
+        summary_body.addWidget(self.layout_label)
+
+        sidebar_content = QWidget()
+        sidebar_layout = QVBoxLayout(sidebar_content)
+        sidebar_layout.setContentsMargins(0, 0, 8, 0)
+        sidebar_layout.setSpacing(12)
+        sidebar_layout.addWidget(region_card)
+        sidebar_layout.addWidget(structure_card)
+        sidebar_layout.addWidget(template_card)
+        sidebar_layout.addWidget(summary_card)
+        sidebar_layout.addStretch(1)
+
+        sidebar = QScrollArea()
+        sidebar.setObjectName("sidebar")
+        sidebar.setWidgetResizable(True)
+        sidebar.setFrameShape(QFrame.Shape.NoFrame)
+        sidebar.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        sidebar.setWidget(sidebar_content)
+
+        result_card, result_body = self._make_card("识别与牌效结果", "稳定画面发布后自动更新")
+        result_body.addWidget(self.output, 1)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setObjectName("workspaceSplitter")
+        splitter.addWidget(sidebar)
+        splitter.addWidget(result_card)
+        splitter.setSizes([390, 750])
+        splitter.setStretchFactor(1, 1)
 
         layout = QVBoxLayout()
-        layout.addLayout(region_row)
-        layout.addLayout(action_row)
-        layout.addWidget(self.region_label)
-        layout.addWidget(self.layout_label)
-        layout.addWidget(self.status_label)
-        layout.addWidget(self.output, 1)
+        layout.setContentsMargins(24, 20, 24, 24)
+        layout.setSpacing(18)
+        layout.addLayout(run_bar)
+        layout.addWidget(splitter, 1)
 
         root = QWidget()
+        root.setObjectName("appRoot")
         root.setLayout(layout)
         self.setCentralWidget(root)
+        self._apply_theme()
         self.print_intro()
+
+    @staticmethod
+    def _make_card(title: str, caption: str) -> tuple[QFrame, QVBoxLayout]:
+        card = QFrame()
+        card.setObjectName("card")
+        body = QVBoxLayout(card)
+        body.setContentsMargins(16, 14, 16, 16)
+        body.setSpacing(10)
+        heading = QLabel(title)
+        heading.setObjectName("cardTitle")
+        detail = QLabel(caption)
+        detail.setObjectName("cardCaption")
+        body.addWidget(heading)
+        body.addWidget(detail)
+        return card, body
+
+    def _apply_theme(self) -> None:
+        self.setStyleSheet("""
+            QMainWindow, QWidget#appRoot { background: #0b1017; color: #e8eef5; }
+            QLabel#eyebrow { color: #55d6a8; font-size: 10px; font-weight: 700; letter-spacing: 1px; }
+            QLabel#appTitle { color: #f7fbff; font-size: 25px; font-weight: 700; }
+            QLabel#appSubtitle, QLabel#cardCaption { color: #8290a3; font-size: 11px; }
+            QLabel#cardTitle { color: #eef5fb; font-size: 14px; font-weight: 700; }
+            QLabel#summaryText {
+                color: #aeb9c8; background: #0c131c; border: 1px solid #202c3a;
+                border-radius: 8px; padding: 9px; font-size: 11px;
+            }
+            QLabel#statusPill {
+                color: #8fe7c8; background: #10271f; border: 1px solid #225640;
+                border-radius: 9px; padding: 7px 12px; font-weight: 600;
+            }
+            QFrame#card { background: #121a24; border: 1px solid #243142; border-radius: 12px; }
+            QScrollArea#sidebar { background: transparent; }
+            QScrollArea#sidebar > QWidget > QWidget { background: transparent; }
+            QPushButton {
+                min-height: 34px; padding: 0 12px; color: #dce5ee; background: #192432;
+                border: 1px solid #2c3b4d; border-radius: 7px; font-weight: 600;
+            }
+            QPushButton:hover { background: #223144; border-color: #3f566e; }
+            QPushButton:pressed { background: #111b27; }
+            QPushButton#primaryButton {
+                min-height: 38px; color: #071510; background: #55d6a8; border-color: #55d6a8;
+                padding: 0 20px;
+            }
+            QPushButton#primaryButton:hover { background: #6de0b7; border-color: #6de0b7; }
+            QPlainTextEdit#resultOutput {
+                color: #d9e3ec; background: #0a1017; border: 1px solid #233142;
+                border-radius: 8px; padding: 14px; selection-background-color: #245c49;
+                font-family: "Cascadia Mono", "Microsoft YaHei UI"; font-size: 12px;
+            }
+            QSplitter#workspaceSplitter::handle { background: transparent; width: 10px; }
+            QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }
+            QScrollBar::handle:vertical { background: #344457; border-radius: 4px; min-height: 28px; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+        """)
 
     def print_intro(self) -> None:
         template_dir = Path(self.config.templates_dir)
