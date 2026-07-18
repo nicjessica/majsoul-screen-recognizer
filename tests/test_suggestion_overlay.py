@@ -29,8 +29,14 @@ class SuggestionOverlayFormattingTests(unittest.TestCase):
     def test_overlay_handles_no_recommendation(self):
         title, detail = format_overlay_suggestion(HandAnalysis(shanten=-1, recommendations=[]))
 
+        self.assertEqual(title, "已完成和牌形")
+        self.assertIn("尚未判断", detail)
+
+    def test_overlay_handles_empty_non_winning_analysis(self):
+        title, detail = format_overlay_suggestion(HandAnalysis(shanten=2, recommendations=[]))
+
         self.assertEqual(title, "暂无切牌建议")
-        self.assertEqual(detail, "当前向听 -1")
+        self.assertEqual(detail, "当前向听 2")
 
 
 if __name__ == "__main__":

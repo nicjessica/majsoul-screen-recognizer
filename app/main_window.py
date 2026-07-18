@@ -1453,12 +1453,21 @@ class MainWindow(QMainWindow):
     @staticmethod
     def format_analysis(analysis) -> str:
         lines = [f"当前向听: {analysis.shanten}"]
+        if analysis.shanten == -1:
+            lines.append("已完成和牌形（尚未判断役种、振听与是否可和）。")
+            return "\n".join(lines)
         if not analysis.recommendations:
             lines.append("没有可用推荐。")
             return "\n".join(lines)
 
         for index, rec in enumerate(analysis.recommendations[:8], start=1):
             effective = " ".join(rec.effective_tiles) if rec.effective_tiles else "-"
+            if rec.discard == "-":
+                state = "已听牌，等待进张" if analysis.shanten == 0 else "等待进张"
+                lines.append(
+                    f"{state}: 有效牌 {rec.ukeire_count} 枚 [{effective}]，{rec.reason}"
+                )
+                continue
             lines.append(
                 f"{index}. 切 {rec.discard}: 向听 {rec.resulting_shanten}, "
                 f"有效牌 {rec.ukeire_count} 枚 [{effective}]，{rec.reason}"

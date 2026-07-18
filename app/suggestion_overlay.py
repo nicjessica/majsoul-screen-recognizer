@@ -34,6 +34,8 @@ def tile_label(name: str) -> str:
 
 
 def format_overlay_suggestion(analysis: HandAnalysis) -> tuple[str, str]:
+    if analysis.shanten == -1:
+        return "已完成和牌形", "尚未判断役种、振听与是否可和"
     if not analysis.recommendations:
         return "暂无切牌建议", f"当前向听 {analysis.shanten}"
 
@@ -41,6 +43,12 @@ def format_overlay_suggestion(analysis: HandAnalysis) -> tuple[str, str]:
     effective = "、".join(tile_label(name) for name in best.effective_tiles[:8]) or "无"
     if len(best.effective_tiles) > 8:
         effective += "…"
+    if best.discard == "-":
+        return (
+            "等待进张",
+            f"{best.resulting_shanten} 向听  ·  有效牌 {best.ukeire_count} 枚\n"
+            f"进张：{effective}",
+        )
     alternatives = ""
     if len(analysis.recommendations) > 1:
         alternatives = "备选：" + " / ".join(
