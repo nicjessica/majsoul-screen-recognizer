@@ -8,6 +8,7 @@ from recognizer.models import TileMatch
 
 
 SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp"}
+EDGE_TRIM_FRACTION = 0.10
 
 
 class TemplateLibrary:
@@ -55,6 +56,29 @@ class TemplateLibrary:
 
 
 def match_score(tile_bgr: np.ndarray, template_bgr: np.ndarray) -> float:
+    scores = [_base_match_score(tile_bgr, template_bgr)]
+
+    # Templates are normally built from the larger hand region.  Other regions
+    # can frame the same tile face more tightly on one side, so try removing a
+    # small amount from one template edge at a time.  Keeping 90% of the full
+    # template prevents this fallback from turning into arbitrary patch matching.
+    tile_height, tile_width = tile_bgr.shape[:2]
+    height, width = template_bgr.shape[:2]
+    trim_y = max(1, round(height * EDGE_TRIM_FRACTION))
+    trim_x = max(1, round(width * EDGE_TRIM_FRACTION))
+    tile_aspect = tile_width / tile_height
+    template_aspect = width / height
+    if template_aspect < tile_aspect and trim_y < height:
+        scores.append(_base_match_score(tile_bgr, template_bgr[trim_y:]))
+        scores.append(_base_match_score(tile_bgr, template_bgr[:-trim_y]))
+    elif template_aspect > tile_aspect and trim_x < width:
+        scores.append(_base_match_score(tile_bgr, template_bgr[:, trim_x:]))
+        scores.append(_base_match_score(tile_bgr, template_bgr[:, :-trim_x]))
+
+    return max(scores)
+
+
+def _base_match_score(tile_bgr: np.ndarray, template_bgr: np.ndarray) -> float:
     import cv2
 
     resized = cv2.resize(tile_bgr, (template_bgr.shape[1], template_bgr.shape[0]))
@@ -67,6 +91,9 @@ def match_score(tile_bgr: np.ndarray, template_bgr: np.ndarray) -> float:
     margin_x = int(width * 0.10)
     margin_y = int(height * 0.10)
     template_core = template_fixed[margin_y : height - margin_y, margin_x : width - margin_x]
+    template_core_gray = cv2.cvtColor(template_core, cv2.COLOR_BGR2GRAY)
+    if float(np.std(template_core_gray)) < 1.0:
+        return direct
     sliding = float(cv2.matchTemplate(tile_fixed, template_core, cv2.TM_CCOEFF_NORMED).max())
 
     return max(direct, sliding)

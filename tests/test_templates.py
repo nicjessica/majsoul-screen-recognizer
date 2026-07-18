@@ -24,6 +24,51 @@ class TemplateMatchTests(unittest.TestCase):
         self.assertGreater(match_score(tile, template), 0.75)
 
     @unittest.skipIf(importlib.util.find_spec("cv2") is None, "opencv-python is not installed")
+    def test_match_score_tolerates_extra_background_on_one_template_edge(self):
+        import cv2
+        import numpy as np
+
+        tile = np.full((120, 80, 3), (225, 225, 225), dtype=np.uint8)
+        cv2.circle(tile, (24, 36), 13, (35, 70, 210), 4)
+        cv2.circle(tile, (56, 76), 16, (210, 60, 35), 5)
+        cv2.line(tile, (10, 104), (70, 96), (20, 130, 60), 4)
+        template = np.full((134, 80, 3), (25, 40, 45), dtype=np.uint8)
+        template[:120] = tile
+
+        from recognizer.templates import match_score
+
+        self.assertGreater(match_score(tile, template), 0.78)
+
+    @unittest.skipIf(importlib.util.find_spec("cv2") is None, "opencv-python is not installed")
+    def test_edge_tolerance_does_not_match_an_obviously_different_pattern(self):
+        import cv2
+        import numpy as np
+
+        tile = np.full((120, 80, 3), (225, 225, 225), dtype=np.uint8)
+        cv2.circle(tile, (40, 60), 24, (35, 70, 210), 6)
+        template = np.full((134, 80, 3), (225, 225, 225), dtype=np.uint8)
+        cv2.rectangle(template, (12, 18), (68, 102), (210, 60, 35), 6)
+        template[120:] = (25, 40, 45)
+
+        from recognizer.templates import match_score
+
+        self.assertLess(match_score(tile, template), 0.78)
+
+    @unittest.skipIf(importlib.util.find_spec("cv2") is None, "opencv-python is not installed")
+    def test_edge_tolerance_rejects_a_constant_trimmed_core(self):
+        import cv2
+        import numpy as np
+
+        tile = np.full((120, 80, 3), (225, 225, 225), dtype=np.uint8)
+        cv2.circle(tile, (40, 60), 24, (35, 70, 210), 6)
+        template = np.full((134, 80, 3), (221, 222, 223), dtype=np.uint8)
+        template[:14] = (25, 80, 40)
+
+        from recognizer.templates import match_score
+
+        self.assertLess(match_score(tile, template), 0.78)
+
+    @unittest.skipIf(importlib.util.find_spec("cv2") is None, "opencv-python is not installed")
     def test_match_candidates_are_sorted_and_match_returns_first(self):
         import cv2
         import numpy as np
