@@ -41,8 +41,8 @@ class MeldState:
 
 @dataclass(frozen=True)
 class RoundContext:
-    seat_wind: str = "east"
-    round_wind: str = "east"
+    seat_wind: str | None = None
+    round_wind: str | None = None
     points: int | None = None
     remaining_draws: int | None = None
     already_riichi: bool = False
@@ -521,10 +521,10 @@ def _value_estimate(
         if tile in {"white", "green", "red"}:
             yaku.append(f"yakuhai:{tile}")
             han += 1
-        if tile == normalize_tile(context.seat_wind):
+        if context.seat_wind is not None and tile == normalize_tile(context.seat_wind):
             yaku.append("yakuhai:seat")
             han += 1
-        if tile == normalize_tile(context.round_wind):
+        if context.round_wind is not None and tile == normalize_tile(context.round_wind):
             yaku.append("yakuhai:round")
             han += 1
 
@@ -627,8 +627,9 @@ def _validate_tile_names(tiles: Iterable[str]) -> None:
 
 def _validate_winds(context: RoundContext) -> None:
     winds = {"east", "south", "west", "north"}
-    if normalize_tile(context.seat_wind) not in winds or normalize_tile(context.round_wind) not in winds:
-        raise ValueError("场风和自风必须是东南西北之一")
+    for label, value in (("自风", context.seat_wind), ("场风", context.round_wind)):
+        if value is not None and normalize_tile(value) not in winds:
+            raise ValueError(f"{label}必须是东南西北之一")
 
 
 def _contains_tiles(hand: Sequence[str], needed: Sequence[str]) -> bool:

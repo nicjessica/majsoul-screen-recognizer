@@ -17,6 +17,7 @@ from recognizer.models import (
     TileMatch,
 )
 from recognizer.templates import TemplateLibrary
+from recognizer.table_state import TableStateRecognizer, _normalize_orientation
 
 
 class RecognitionError(RuntimeError):
@@ -35,6 +36,7 @@ class TileRecognizer:
         self.config = config
         try:
             self.templates = TemplateLibrary(config.templates_dir)
+            self.table_state_recognizer = TableStateRecognizer(config)
         except RuntimeError as exc:
             raise RecognitionError(str(exc)) from exc
 
@@ -161,6 +163,11 @@ class TileRecognizer:
             ))
         matches = [*core_matches, *meld_matches, *opponent_matches, *river_matches]
         confidence = sum(match.score for match in core_matches) / max(len(core_matches), 1)
+        table_state_recognizer = getattr(self, "table_state_recognizer", None)
+        if table_state_recognizer is None:
+            table_state_recognizer = TableStateRecognizer(self.config)
+            self.table_state_recognizer = table_state_recognizer
+        table_state = table_state_recognizer.recognize(frame_rgb)
         return RecognitionResult(
             hand=hand,
             draw=draw,
@@ -173,6 +180,7 @@ class TileRecognizer:
             opponent_melds=opponent_results,
             rivers=river_results,
             open_meld_count=open_meld_count,
+            table_state=table_state,
         )
 
     def _try_detect_tile_state(self, frame_rgb: np.ndarray) -> _DetectedTileState | None:
@@ -449,6 +457,19 @@ class TileRecognizer:
                 else:
                     name = f"river_{river.seat}_{index:02d}.png"
                 Image.fromarray(tile).save(output / name)
+        table = self.config.layout.table_state
+        if table.round_region is not None:
+            Image.fromarray(crop_relative(frame_rgb, table.round_region)).save(
+                output / "table_round.png"
+            )
+        if table.self_wind_region is not None:
+            Image.fromarray(crop_relative(frame_rgb, table.self_wind_region)).save(
+                output / "table_self_wind.png"
+            )
+        for score in table.scores:
+            crop = crop_relative(frame_rgb, score.region)
+            crop = _normalize_orientation(crop, score.orientation)
+            Image.fromarray(crop).save(output / f"table_score_{score.seat}.png")
         return output
 
     def save_region_overlay(self, frame_rgb: np.ndarray, output_path: str | Path) -> None:
@@ -470,6 +491,13 @@ class TileRecognizer:
         for river in self.config.layout.rivers:
             if river.region is not None and (river.tile_count > 0 or river.tiles):
                 regions.append((f"river:{river.seat}", river.region, (80, 220, 220)))
+        table = self.config.layout.table_state
+        if table.round_region is not None:
+            regions.append(("table:round", table.round_region, (255, 120, 180)))
+        if table.self_wind_region is not None:
+            regions.append(("table:self_wind", table.self_wind_region, (255, 120, 180)))
+        for score in table.scores:
+            regions.append((f"table:score:{score.seat}", score.region, (255, 120, 180)))
 
         for label, region, color in regions:
             left = round(region.x * width)

@@ -8,6 +8,7 @@ from recognizer.config import (
     MeldTileSlotConfig,
     PlayerMeldLayoutConfig,
     PlayerRiverLayoutConfig,
+    PlayerScoreLayoutConfig,
     RiverTileSlotConfig,
     RelativeRegion,
     default_config,
@@ -49,6 +50,41 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(loaded.layout.draw_tile_count, 1)
             self.assertEqual(loaded.layout.open_meld_count, 0)
             self.assertEqual(loaded.layout.melds, [])
+
+    def test_table_state_round_trip_and_old_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            config = default_config()
+            config.templates_dir = str(Path(tmp) / "templates")
+            config.table_templates_dir = str(Path(tmp) / "table_templates")
+            config.layout.table_state.round_region = RelativeRegion(0.4, 0.4, 0.1, 0.1)
+            config.layout.table_state.self_wind_region = RelativeRegion(0.5, 0.4, 0.1, 0.1)
+            config.layout.table_state.scores = [PlayerScoreLayoutConfig(
+                "right", RelativeRegion(0.7, 0.3, 0.1, 0.2), "rotated_cw"
+            )]
+            save_config(config, path)
+            loaded = load_config(path)
+            self.assertEqual(loaded.layout.table_state, config.layout.table_state)
+            self.assertEqual(loaded.table_templates_dir, config.table_templates_dir)
+
+            path.write_text("{}", encoding="utf-8")
+            old = load_config(path)
+            self.assertIsNone(old.layout.table_state.round_region)
+            self.assertEqual(old.layout.table_state.scores, [])
+            self.assertEqual(old.table_templates_dir, "data/table_templates")
+
+    def test_validate_table_state_layout(self):
+        config = default_config()
+        config.layout.table_state.round_region = RelativeRegion(0.9, 0, 0.2, 1)
+        config.layout.table_state.scores = [
+            PlayerScoreLayoutConfig("future", RelativeRegion(0, 0, 1, 1)),
+            PlayerScoreLayoutConfig("self", RelativeRegion(0, 0, 1, 1)),
+            PlayerScoreLayoutConfig("self", RelativeRegion(0, 0, 1, 1)),
+        ]
+        text = "\n".join(validate_config(config))
+        self.assertIn("Round region is outside", text)
+        self.assertIn("Score seat must be", text)
+        self.assertIn("Score seat is duplicated", text)
 
     def test_old_config_infers_open_meld_count_from_concealed_tiles(self):
         with tempfile.TemporaryDirectory() as tmp:

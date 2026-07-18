@@ -27,7 +27,12 @@
     "open_meld_count": 0,
     "melds": [],
     "opponent_melds": [],
-    "rivers": []
+    "rivers": [],
+    "table_state": {
+      "round_region": null,
+      "self_wind_region": null,
+      "scores": []
+    }
   },
   "recognition": {
     "threshold": 0.78,
@@ -38,5 +43,6 @@
     "position_y": 0.022
   },
   "templates_dir": "data/templates",
+  "table_templates_dir": "data/table_templates",
   "capture_interval_seconds": 0.75
 }

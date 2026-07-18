@@ -40,6 +40,7 @@ from recognizer.config import (
     MeldTileSlotConfig,
     PlayerMeldLayoutConfig,
     PlayerRiverLayoutConfig,
+    PlayerScoreLayoutConfig,
     RelativeRegion,
     RiverTileSlotConfig,
     load_config,
@@ -51,10 +52,24 @@ from recognizer.recognizer import RecognitionError, TileRecognizer
 from recognizer.river_events import RiverDiscardEvent, RiverEventTracker
 from recognizer.stability import KeyRegionSnapshot, RecognitionStabilizer
 from recognizer.template_builder import build_templates_from_screenshot
+from recognizer.table_template_builder import build_table_state_templates_from_screenshot
 from recognizer.visible_tiles import collect_visible_tiles
 
 
 SEAT_LABELS = {"self": "自己", "right": "右家", "across": "对家", "left": "左家"}
+RIVER_SEAT_LABELS = {"self": "我的", "left": "上家", "right": "下家", "across": "对家"}
+RIVER_SELECT_SPECS = (
+    ("self", "框选我的牌河"),
+    ("left", "框选上家牌河"),
+    ("right", "框选下家牌河"),
+    ("across", "框选对家牌河"),
+)
+SCORE_SELECT_SPECS = (
+    ("self", "框选我的点数"),
+    ("left", "框选上家点数"),
+    ("right", "框选下家点数"),
+    ("across", "框选对家点数"),
+)
 MELD_KIND_LABELS = {
     "chi": "吃",
     "pon": "碰",
@@ -90,6 +105,7 @@ class MainWindow(QMainWindow):
         self.pending_river_seat = "self"
         self.pending_river_slots: list[RiverTileSlotConfig] | None = None
         self.pending_river_slot_indexes: list[int] = []
+        self.pending_score_orientation = "upright"
         self.resume_timer_after_meld_config = False
         self.suggestion_overlay = SuggestionOverlay()
         self.suggestion_overlay.position_changed.connect(self.save_overlay_position)
@@ -128,8 +144,33 @@ class MainWindow(QMainWindow):
         select_opponent_meld_button = QPushButton("框选他家副露区")
         select_opponent_meld_button.clicked.connect(self.select_opponent_meld_region)
 
-        select_river_button = QPushButton("框选牌河区")
-        select_river_button.clicked.connect(self.select_river_region)
+        river_select_buttons = []
+        for seat, label in RIVER_SELECT_SPECS:
+            button = QPushButton(label)
+            button.clicked.connect(
+                lambda checked=False, selected_seat=seat: self.select_river_region(
+                    selected_seat
+                )
+            )
+            river_select_buttons.append(button)
+
+        select_round_button = QPushButton("框选场风和局数")
+        select_round_button.clicked.connect(
+            lambda: self.select_table_region("round")
+        )
+        select_self_wind_button = QPushButton("框选我的自风")
+        select_self_wind_button.clicked.connect(
+            lambda: self.select_table_region("self_wind")
+        )
+        score_select_buttons = []
+        for seat, label in SCORE_SELECT_SPECS:
+            button = QPushButton(label)
+            button.clicked.connect(
+                lambda checked=False, selected_seat=seat: self.select_score_region(
+                    selected_seat
+                )
+            )
+            score_select_buttons.append(button)
 
         counts_button = QPushButton("设置牌数")
         counts_button.clicked.connect(self.set_tile_counts)
@@ -168,14 +209,18 @@ class MainWindow(QMainWindow):
 
         build_templates_button = QPushButton("从截图裁模板")
         build_templates_button.clicked.connect(self.build_templates)
+        build_table_templates_button = QPushButton("从截图裁桌况模板")
+        build_table_templates_button.clicked.connect(self.build_table_templates)
 
         for button in (
             select_game_button, select_hand_button, select_draw_button,
             select_dora_button, select_meld_button, select_opponent_meld_button,
-            select_river_button, counts_button, dora_count_button,
+            *river_select_buttons, select_round_button, select_self_wind_button,
+            *score_select_buttons, counts_button, dora_count_button,
             meld_structure_button, opponent_meld_structure_button,
             river_structure_button, threshold_button, once_button,
-            reload_button, build_templates_button, self.auto_state_button,
+            reload_button, build_templates_button, build_table_templates_button,
+            self.auto_state_button,
         ):
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
@@ -206,7 +251,8 @@ class MainWindow(QMainWindow):
         for index, button in enumerate((
             select_game_button, select_hand_button, select_draw_button,
             select_dora_button, select_meld_button, select_opponent_meld_button,
-            select_river_button,
+            *river_select_buttons, select_round_button, select_self_wind_button,
+            *score_select_buttons,
         )):
             region_grid.addWidget(button, index // 2, index % 2)
         region_body.addLayout(region_grid)
@@ -227,6 +273,7 @@ class MainWindow(QMainWindow):
         template_row.setSpacing(8)
         template_row.addWidget(reload_button)
         template_row.addWidget(build_templates_button)
+        template_row.addWidget(build_table_templates_button)
         template_body.addLayout(template_row)
 
         summary_card, summary_body = self._make_card("当前配置", "保存后立即用于下一次识别")
@@ -330,6 +377,7 @@ class MainWindow(QMainWindow):
 
     def print_intro(self) -> None:
         template_dir = Path(self.config.templates_dir)
+        table_template_dir = Path(self.config.table_templates_dir)
         self.output.setPlainText(
             "使用步骤:\n"
             "1. 点击“框选画面”，选择整个雀魂游戏画面。\n"
@@ -337,6 +385,8 @@ class MainWindow(QMainWindow):
             "3. 点击“设置牌数”，设置手牌、摸牌、副露可见牌及副露组数。\n"
             "4. 点击“识别一次”或“开始识别”。\n\n"
             f"当前模板目录: {template_dir.resolve()}\n"
+            f"桌况模板目录: {table_template_dir.resolve()}\n"
+            "桌况模板命名：round_east_1、wind_north、score_25000 等。\n"
             "副露会根据可靠牌面与结构判断吃、碰和杠；不明确的形态显示为未知。\n"
         )
 
@@ -362,8 +412,12 @@ class MainWindow(QMainWindow):
             for player in layout.opponent_melds
         ) or "未设置"
         rivers = ", ".join(
-            f"{SEAT_LABELS.get(player.seat, player.seat)}={len(player.tiles) or player.tile_count}"
+            f"{RIVER_SEAT_LABELS.get(player.seat, player.seat)}={len(player.tiles) or player.tile_count}"
             for player in layout.rivers
+        ) or "未设置"
+        table = layout.table_state
+        score_seats = ",".join(
+            RIVER_SEAT_LABELS.get(item.seat, item.seat) for item in table.scores
         ) or "未设置"
         return (
             "牌区比例: "
@@ -379,7 +433,9 @@ class MainWindow(QMainWindow):
             f"副露 {meld_text}, 可见张数={layout.meld_tile_count}, "
             f"组数={layout.open_meld_count}, 结构={meld_structure}; "
             f"牌数自动检测={'开' if self.config.recognition.auto_detect_tile_state else '关'}; "
-            f"他家副露 {opponents}; 牌河 {rivers}"
+            f"他家副露 {opponents}; 牌河 {rivers}; "
+            f"场风/局数={'已设置' if table.round_region else '未设置'}, "
+            f"自风={'已设置' if table.self_wind_region else '未设置'}, 点数={score_seats}"
         )
 
     def select_game_region(self) -> None:
@@ -407,14 +463,47 @@ class MainWindow(QMainWindow):
         self.pending_region = f"opponent_meld:{seat}"
         self.open_region_selector()
 
-    def select_river_region(self) -> None:
+    def select_river_region(self, seat: str) -> None:
         if self.config.game_region is None:
             QMessageBox.warning(self, "缺少画面区域", "请先点击“框选画面”。")
             return
-        seat = self._choose_seat("选择要框选牌河区的玩家", include_self=True)
-        if seat is None:
-            return
+        if seat not in RIVER_SEAT_LABELS:
+            raise ValueError(f"未知牌河方位: {seat}")
         self.pending_region = f"river:{seat}"
+        self.open_region_selector()
+
+    def select_table_region(self, kind: str) -> None:
+        if self.config.game_region is None:
+            QMessageBox.warning(self, "缺少画面区域", "请先点击“框选画面”。")
+            return
+        if kind not in {"round", "self_wind"}:
+            raise ValueError(f"未知桌况区域: {kind}")
+        self.pending_region = f"table:{kind}"
+        self.open_region_selector()
+
+    def select_score_region(self, seat: str) -> None:
+        if self.config.game_region is None:
+            QMessageBox.warning(self, "缺少画面区域", "请先点击“框选画面”。")
+            return
+        if seat not in RIVER_SEAT_LABELS:
+            raise ValueError(f"未知点数方位: {seat}")
+        current = next(
+            (item.orientation for item in self.config.layout.table_state.scores if item.seat == seat),
+            "upright",
+        )
+        choices = ("upright", "rotated_cw", "rotated_ccw", "rotated_180")
+        orientation, ok = QInputDialog.getItem(
+            self,
+            f"{RIVER_SEAT_LABELS[seat]}点数方向",
+            "旋转归一方向：",
+            choices,
+            choices.index(current),
+            False,
+        )
+        if not ok:
+            return
+        self.pending_score_orientation = orientation
+        self.pending_region = f"table:score:{seat}"
         self.open_region_selector()
 
     def open_region_selector(self) -> None:
@@ -463,7 +552,31 @@ class MainWindow(QMainWindow):
             river.region = relative
             river.tile_count = 0
             river.tiles = []
-            message = f"{SEAT_LABELS[seat]}牌河区已保存；请配置当前仍可见的牌槽"
+            message = f"{RIVER_SEAT_LABELS[seat]}牌河区已保存；请配置当前仍可见的牌槽"
+        elif self.pending_region and self.pending_region.startswith("table:"):
+            relative = self.to_relative_region(region)
+            if relative is None:
+                QMessageBox.warning(self, "区域无效", "请选择游戏画面内部区域。")
+                return
+            table = self.config.layout.table_state
+            target = self.pending_region.split(":")
+            if target[1] == "round":
+                table.round_region = relative
+                message = "场风和局数区域已保存"
+            elif target[1] == "self_wind":
+                table.self_wind_region = relative
+                message = "我的自风区域已保存"
+            else:
+                seat = target[2]
+                table.scores = [item for item in table.scores if item.seat != seat]
+                table.scores.append(
+                    PlayerScoreLayoutConfig(
+                        seat=seat,
+                        region=relative,
+                        orientation=self.pending_score_orientation,
+                    )
+                )
+                message = f"{RIVER_SEAT_LABELS[seat]}点数区域已保存"
         elif self.pending_region and self.pending_region.startswith("opponent_meld:"):
             seat = self.pending_region.split(":", 1)[1]
             relative = self.to_relative_region(region)
@@ -612,11 +725,11 @@ class MainWindow(QMainWindow):
             return
         river = self._get_river_layout(seat)
         if river is None or river.region is None:
-            QMessageBox.warning(self, "缺少牌河区域", f"请先框选{SEAT_LABELS[seat]}牌河区。")
+            QMessageBox.warning(self, "缺少牌河区域", f"请先框选{RIVER_SEAT_LABELS[seat]}牌河区。")
             return
         text, ok = QInputDialog.getMultiLineText(
             self,
-            f"配置{SEAT_LABELS[seat]}牌河牌槽",
+            f"配置{RIVER_SEAT_LABELS[seat]}牌河牌槽",
             "每行一张当前仍可见的牌：行 列 实际方向 normal|riichi\n"
             "例：0 0 upright normal；立直横牌可写 1 3 rotated_cw riichi\n"
             "空位或已被鸣走的牌不要配置，行列允许不连续。",
@@ -635,7 +748,7 @@ class MainWindow(QMainWindow):
             save_config(self.config)
             self._invalidate_recognition_state()
             self.layout_label.setText(self.layout_text())
-            self.status_label.setText(f"已清除{SEAT_LABELS[seat]}牌河牌槽")
+            self.status_label.setText(f"已清除{RIVER_SEAT_LABELS[seat]}牌河牌槽")
             return
         self.pending_river_seat = seat
         self.pending_river_slots = slots
@@ -656,7 +769,7 @@ class MainWindow(QMainWindow):
         self.pending_region = "river_slot"
         state = "立直横牌" if slot.is_riichi else "普通牌"
         self.status_label.setText(
-            f"请框选{SEAT_LABELS[self.pending_river_seat]}牌河第 {slot.row + 1} 行"
+            f"请框选{RIVER_SEAT_LABELS[self.pending_river_seat]}牌河第 {slot.row + 1} 行"
             f"第 {slot.column + 1} 列（{state}，{slot.orientation}）"
         )
         self.open_region_selector()
@@ -691,7 +804,7 @@ class MainWindow(QMainWindow):
             save_config(self.config)
             self._invalidate_recognition_state()
             self.layout_label.setText(self.layout_text())
-            self.status_label.setText(f"{SEAT_LABELS[self.pending_river_seat]}牌河牌槽已保存")
+            self.status_label.setText(f"{RIVER_SEAT_LABELS[self.pending_river_seat]}牌河牌槽已保存")
         self.pending_river_slots = None
         self.pending_river_slot_indexes = []
         self.pending_region = None
@@ -1221,6 +1334,64 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"已生成 {len(saved)} 个模板")
         self.output.setPlainText("已生成模板:\n" + "\n".join(str(path) for path in saved))
 
+    def build_table_templates(self) -> None:
+        screenshot_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择一张已框选桌况区域对应的雀魂截图",
+            "",
+            "Images (*.png *.jpg *.jpeg *.bmp)",
+        )
+        if not screenshot_path:
+            return
+        text, ok = QInputDialog.getMultiLineText(
+            self,
+            "标注当前桌况",
+            "每行填写一项，可只填已框选且确定的项目：\n"
+            "round east 1\nwind north\n"
+            "score self 25000\nscore left 25000\n"
+            "score across 25000\nscore right 25000",
+        )
+        if not ok:
+            return
+        round_value = None
+        self_wind = None
+        scores: dict[str, int] = {}
+        try:
+            for line_number, raw in enumerate(text.splitlines(), start=1):
+                parts = raw.split()
+                if not parts:
+                    continue
+                if parts[0] == "round" and len(parts) == 3:
+                    round_value = (parts[1], int(parts[2]))
+                    if parts[1] not in {"east", "south", "west", "north"} or not 1 <= round_value[1] <= 4:
+                        raise ValueError("round 必须是 east|south|west|north 和 1..4")
+                elif parts[0] == "wind" and len(parts) == 2:
+                    self_wind = parts[1]
+                    if self_wind not in {"east", "south", "west", "north"}:
+                        raise ValueError("wind 必须是 east|south|west|north")
+                elif parts[0] == "score" and len(parts) == 3:
+                    if parts[1] not in RIVER_SEAT_LABELS:
+                        raise ValueError("score 方位必须是 self|left|across|right")
+                    scores[parts[1]] = int(parts[2])
+                else:
+                    raise ValueError(f"第 {line_number} 行格式无效")
+            saved = build_table_state_templates_from_screenshot(
+                screenshot_path,
+                self.config.table_templates_dir,
+                self.config.layout,
+                round_value=round_value,
+                self_wind=self_wind,
+                scores=scores,
+            )
+            self._invalidate_recognition_state()
+            self.recognizer = TileRecognizer(self.config)
+        except Exception as exc:
+            self.status_label.setText("裁剪桌况模板失败")
+            self.output.setPlainText(f"{type(exc).__name__}: {exc}")
+            return
+        self.status_label.setText(f"已生成 {len(saved)} 个桌况模板")
+        self.output.setPlainText("已生成桌况模板:\n" + "\n".join(str(path) for path in saved))
+
     def recognize_once(self) -> None:
         if self.config.game_region is None:
             self.status_label.setText("请先框选画面")
@@ -1376,6 +1547,15 @@ class MainWindow(QMainWindow):
                 visible_tiles=visible_tiles,
             )
             melds = tuple(MeldState("unknown", (), True) for _ in range(open_meld_count))
+            round_state = result.table_state.round
+            wind_state = result.table_state.self_wind
+            scores = {item.seat: item.score for item in result.table_state.scores}
+            context = RoundContext(
+                seat_wind=wind_state.wind,
+                round_wind=round_state.round_wind,
+                points=scores.get("self"),
+                dora_indicators=tuple(result.dora_indicators),
+            )
             if self.active_river_event is not None:
                 event = self.active_river_event
                 candidates = generate_call_candidates(tiles, event.tile, event.source)
@@ -1389,14 +1569,14 @@ class MainWindow(QMainWindow):
                     melds=melds,
                     candidates=candidates,
                     visible_tiles=call_visible_tiles,
-                    context=RoundContext(dora_indicators=tuple(result.dora_indicators)),
+                    context=context,
                 )
             else:
                 decision = evaluate_actions(
                     tiles,
                     melds=melds,
                     visible_tiles=visible_tiles,
-                    context=RoundContext(dora_indicators=tuple(result.dora_indicators)),
+                    context=context,
                 )
         except ValueError:
             self.suggestion_overlay.hide()
@@ -1464,6 +1644,22 @@ class MainWindow(QMainWindow):
                 text += f"（部分未知：{river.error}）"
             river_lines.append(f"{SEAT_LABELS[seat]}牌河: {text}")
         river_text = ("\n".join(river_lines) + "\n") if river_lines else ""
+        round_state = result.table_state.round
+        wind_state = result.table_state.self_wind
+        wind_labels = {"east": "东", "south": "南", "west": "西", "north": "北"}
+        if round_state.round_wind is not None and round_state.hand_number is not None:
+            round_text = f"{wind_labels[round_state.round_wind]}{round_state.hand_number}局"
+        else:
+            round_text = "未知"
+        score_by_seat = {item.seat: item.score for item in result.table_state.scores}
+        score_text = " ".join(
+            f"{RIVER_SEAT_LABELS[seat]}={score_by_seat.get(seat) if score_by_seat.get(seat) is not None else '?'}"
+            for seat in ("self", "left", "across", "right")
+        )
+        table_text = (
+            f"桌况: {round_text}, 自风={wind_labels.get(wind_state.wind, '未知')}, "
+            f"点数 {score_text}\n"
+        )
         return (
             f"{title}\n"
             f"牌数状态: 手牌 {len(result.hand)} + 摸牌 {1 if result.draw else 0}, "
@@ -1475,6 +1671,7 @@ class MainWindow(QMainWindow):
             f"副露: {meld_text}\n"
             f"{opponent_text}"
             f"{river_text}"
+            f"{table_text}"
             f"置信度: {result.confidence:.3f}\n\n"
             "牌效分析（已知可见牌修正）\n"
             f"{analysis_text}"

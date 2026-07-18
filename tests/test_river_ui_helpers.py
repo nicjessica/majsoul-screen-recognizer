@@ -1,6 +1,11 @@
 import unittest
 
-from app.main_window import MainWindow, SEAT_LABELS
+from app.main_window import (
+    MainWindow,
+    RIVER_SEAT_LABELS,
+    RIVER_SELECT_SPECS,
+    SEAT_LABELS,
+)
 from recognizer.config import PlayerRiverLayoutConfig, RelativeRegion, default_config
 from recognizer.geometry import ScreenRegion
 
@@ -67,6 +72,23 @@ class RiverUiHelperTests(unittest.TestCase):
         self.assertEqual(
             [SEAT_LABELS[seat] for seat in ("self", "right", "across", "left")],
             ["自己", "右家", "对家", "左家"],
+        )
+
+    def test_river_labels_map_turn_order_to_internal_screen_seats(self):
+        self.assertEqual(
+            RIVER_SEAT_LABELS,
+            {"self": "我的", "left": "上家", "right": "下家", "across": "对家"},
+        )
+
+    def test_river_selection_exposes_four_direct_buttons(self):
+        self.assertEqual(
+            RIVER_SELECT_SPECS,
+            (
+                ("self", "框选我的牌河"),
+                ("left", "框选上家牌河"),
+                ("right", "框选下家牌河"),
+                ("across", "框选对家牌河"),
+            ),
         )
 
 

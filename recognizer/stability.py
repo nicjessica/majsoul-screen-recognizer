@@ -38,6 +38,13 @@ class KeyRegionSnapshot:
         for river in layout.rivers:
             if river.region is not None and (river.tile_count > 0 or river.tiles):
                 active_regions.append((f"river:{river.seat}", river.region))
+        table_state = layout.table_state
+        if table_state.round_region is not None:
+            active_regions.append(("table:round", table_state.round_region))
+        if table_state.self_wind_region is not None:
+            active_regions.append(("table:self_wind", table_state.self_wind_region))
+        for score in table_state.scores:
+            active_regions.append((f"table:score:{score.seat}", score.region))
 
         return cls(
             regions={
@@ -96,12 +103,20 @@ def result_key(result: RecognitionResult) -> tuple[object, ...]:
         )
         for seat in ("self", "right", "across", "left")
     )
+    scores_by_seat = {item.seat: item.score for item in result.table_state.scores}
+    table_key = (
+        result.table_state.round.round_wind,
+        result.table_state.round.hand_number,
+        result.table_state.self_wind.wind,
+        tuple((seat, scores_by_seat.get(seat)) for seat in ("self", "right", "across", "left")),
+    )
     return (
         tuple(result.hand),
         result.draw,
         result.open_meld_count,
         tuple(result.dora_indicators),
         meld_key,
+        table_key,
         river_key,
         tuple(opponent_key),
     )

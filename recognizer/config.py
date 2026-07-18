@@ -63,6 +63,20 @@ class PlayerRiverLayoutConfig:
 
 
 @dataclass
+class PlayerScoreLayoutConfig:
+    seat: str
+    region: RelativeRegion
+    orientation: str = "upright"
+
+
+@dataclass
+class TableStateLayoutConfig:
+    round_region: RelativeRegion | None = None
+    self_wind_region: RelativeRegion | None = None
+    scores: list[PlayerScoreLayoutConfig] = field(default_factory=list)
+
+
+@dataclass
 class LayoutConfig:
     hand_region: RelativeRegion
     draw_region: RelativeRegion
@@ -76,6 +90,7 @@ class LayoutConfig:
     melds: list[MeldConfig] = field(default_factory=list)
     opponent_melds: list[PlayerMeldLayoutConfig] = field(default_factory=list)
     rivers: list[PlayerRiverLayoutConfig] = field(default_factory=list)
+    table_state: TableStateLayoutConfig = field(default_factory=TableStateLayoutConfig)
 
 
 @dataclass
@@ -97,6 +112,7 @@ class AppConfig:
     recognition: RecognitionConfig
     overlay: OverlayConfig = field(default_factory=OverlayConfig)
     templates_dir: str = "data/templates"
+    table_templates_dir: str = "data/table_templates"
     capture_interval_seconds: float = 0.75
 
 
@@ -125,6 +141,7 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
 def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     Path(config.templates_dir).mkdir(parents=True, exist_ok=True)
+    Path(config.table_templates_dir).mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(_config_to_dict(config), indent=2, ensure_ascii=False), encoding="utf-8")
 
 
@@ -167,6 +184,7 @@ def _config_from_dict(data: dict[str, Any]) -> AppConfig:
             for item in layout_data.get("opponent_melds", [])
         ],
         rivers=[_player_river_layout_from_dict(item) for item in layout_data.get("rivers", [])],
+        table_state=_table_state_layout_from_dict(layout_data.get("table_state", {})),
     )
 
     recognition_data = data.get("recognition", {})
@@ -191,6 +209,7 @@ def _config_from_dict(data: dict[str, Any]) -> AppConfig:
         recognition=recognition,
         overlay=overlay,
         templates_dir=str(data.get("templates_dir", default.templates_dir)),
+        table_templates_dir=str(data.get("table_templates_dir", default.table_templates_dir)),
         capture_interval_seconds=float(
             data.get("capture_interval_seconds", default.capture_interval_seconds)
         ),
@@ -259,6 +278,26 @@ def _player_river_layout_from_dict(data: dict[str, Any]) -> PlayerRiverLayoutCon
     )
 
 
+def _table_state_layout_from_dict(data: dict[str, Any]) -> TableStateLayoutConfig:
+    round_data = data.get("round_region")
+    wind_data = data.get("self_wind_region")
+    scores = []
+    for item in data.get("scores", []):
+        orientation = str(item.get("orientation", "upright"))
+        if orientation not in MELD_ORIENTATIONS:
+            orientation = "upright"
+        scores.append(PlayerScoreLayoutConfig(
+            seat=str(item.get("seat", "")),
+            region=RelativeRegion(**item["region"]),
+            orientation=orientation,
+        ))
+    return TableStateLayoutConfig(
+        round_region=RelativeRegion(**round_data) if round_data else None,
+        self_wind_region=RelativeRegion(**wind_data) if wind_data else None,
+        scores=scores,
+    )
+
+
 def validate_config(config: AppConfig) -> list[str]:
     """返回供 UI 展示的配置错误；加载旧配置时不会自动调用。"""
     errors: list[str] = []
@@ -272,6 +311,23 @@ def validate_config(config: AppConfig) -> list[str]:
         errors.append("建议浮层水平位置必须在 0 至 1 之间。")
     if not 0.0 <= config.overlay.position_y <= 1.0:
         errors.append("建议浮层垂直位置必须在 0 至 1 之间。")
+
+    table_state = layout.table_state
+    if table_state.round_region is not None and not _is_valid_relative_region(table_state.round_region):
+        errors.append("Round region is outside 0..1.")
+    if table_state.self_wind_region is not None and not _is_valid_relative_region(table_state.self_wind_region):
+        errors.append("Self wind region is outside 0..1.")
+    seen_score_seats: set[str] = set()
+    for score in table_state.scores:
+        if score.seat not in PLAYER_SEATS:
+            errors.append(f"Score seat must be self/right/across/left: {score.seat}")
+        elif score.seat in seen_score_seats:
+            errors.append(f"Score seat is duplicated: {score.seat}")
+        seen_score_seats.add(score.seat)
+        if not _is_valid_relative_region(score.region):
+            errors.append(f"Score {score.seat} region is outside 0..1.")
+        if score.orientation not in MELD_ORIENTATIONS:
+            errors.append(f"Score {score.seat} has invalid orientation.")
 
     seen_opponent_seats: set[str] = set()
     for player in layout.opponent_melds:

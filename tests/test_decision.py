@@ -180,6 +180,20 @@ class DecisionTests(unittest.TestCase):
         self.assertIsNone(value.points_range)
         self.assertIn("fu and exact points", value.unknown)
 
+    def test_unknown_winds_do_not_invent_yakuhai(self):
+        hand = [
+            "1m", "2m", "3m", "2p", "3p", "4p", "3s", "4s", "5s", "red",
+        ]
+        report = evaluate_actions(
+            hand,
+            melds=[MeldState("pon", ("east", "east", "east"))],
+            candidates=[ActionCandidate("skip")],
+            context=RoundContext(),
+        )
+
+        self.assertNotIn("yakuhai:seat", report.evaluations[0].value.guaranteed_yaku)
+        self.assertNotIn("yakuhai:round", report.evaluations[0].value.guaranteed_yaku)
+
     def test_red_five_value_is_a_conservative_post_action_floor(self):
         hand = [
             "1m", "2m", "3m", "2p", "3p", "4p", "3s", "4s", "5s",

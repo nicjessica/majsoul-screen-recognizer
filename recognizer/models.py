@@ -52,6 +52,36 @@ class PlayerRiverRecognition:
 
 
 @dataclass(frozen=True)
+class RoundRecognition:
+    round_wind: str | None = None
+    hand_number: int | None = None
+    confidence: float | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class WindRecognition:
+    wind: str | None = None
+    confidence: float | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class PlayerScoreRecognition:
+    seat: str
+    score: int | None = None
+    confidence: float | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class TableStateRecognition:
+    round: RoundRecognition = field(default_factory=RoundRecognition)
+    self_wind: WindRecognition = field(default_factory=WindRecognition)
+    scores: list[PlayerScoreRecognition] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class RecognitionResult:
     hand: list[str]
     draw: str | None
@@ -64,3 +94,4 @@ class RecognitionResult:
     opponent_melds: list[PlayerMeldRecognition] = field(default_factory=list)
     rivers: list[PlayerRiverRecognition] = field(default_factory=list)
     open_meld_count: int | None = None
+    table_state: TableStateRecognition = field(default_factory=TableStateRecognition)
