@@ -23,7 +23,8 @@ class SuggestionOverlayFormattingTests(unittest.TestCase):
 
         title, detail = format_overlay_suggestion(analysis)
 
-        self.assertEqual(title, "首选切牌  9万")
+        self.assertEqual(title, "建议操作")
+        self.assertIn("操作：切 9万", detail)
         self.assertIn("0 向听  ·  有效牌 7 枚", detail)
         self.assertIn("进张：中、5筒", detail)
         self.assertIn("备选：东", detail)
@@ -31,14 +32,27 @@ class SuggestionOverlayFormattingTests(unittest.TestCase):
     def test_overlay_handles_no_recommendation(self):
         title, detail = format_overlay_suggestion(HandAnalysis(shanten=-1, recommendations=[]))
 
-        self.assertEqual(title, "已完成和牌形")
+        self.assertEqual(title, "建议操作")
+        self.assertIn("操作：跳过", detail)
         self.assertIn("尚未判断", detail)
 
     def test_overlay_handles_empty_non_winning_analysis(self):
         title, detail = format_overlay_suggestion(HandAnalysis(shanten=2, recommendations=[]))
 
-        self.assertEqual(title, "暂无切牌建议")
-        self.assertEqual(detail, "当前向听 2")
+        self.assertEqual(title, "建议操作")
+        self.assertEqual(detail, "操作：跳过\n当前向听 2")
+
+    def test_waiting_stage_explicitly_recommends_skip(self):
+        analysis = HandAnalysis(
+            shanten=2,
+            recommendations=[DiscardRecommendation("-", 2, 20, ["2m", "3s"], "wait")],
+        )
+
+        title, detail = format_overlay_suggestion(analysis)
+
+        self.assertEqual(title, "建议操作")
+        self.assertIn("操作：跳过（等待进张）", detail)
+        self.assertIn("2 向听  ·  有效牌 20 枚", detail)
 
     def test_overlay_marks_riichi_as_conditional_when_round_data_is_missing(self):
         analysis = HandAnalysis(
@@ -60,18 +74,41 @@ class SuggestionOverlayFormattingTests(unittest.TestCase):
             reasons=("点棒或牌山余量未识别",),
         ),), action)
 
-        _, detail = format_overlay_suggestion(analysis, decision)
+        title, detail = format_overlay_suggestion(analysis, decision)
 
-        self.assertIn("点棒/余牌满足时可考虑", detail)
+        self.assertEqual(title, "建议操作")
+        self.assertIn("操作：切 9万 / 立直（条件式）", detail)
+        self.assertIn("点棒/余牌满足时可考虑立直", detail)
         self.assertIn("默听保留改良", detail)
+
+    def test_overlay_explicitly_lists_legal_riichi(self):
+        analysis = HandAnalysis(
+            shanten=1,
+            recommendations=[DiscardRecommendation("9m", 0, 8, ["5s"], "best")],
+        )
+        value = ValueEstimate(("riichi",), 1, 0)
+        evaluation = ActionEvaluation(
+            ActionCandidate("riichi", discard_tile="9m"), True, "legal", 0, 8,
+            ("5s",), "similar", "high", value, "recommended", (),
+        )
+
+        title, detail = format_overlay_suggestion(
+            analysis, DecisionReport((evaluation,), evaluation.action)
+        )
+
+        self.assertEqual(title, "建议操作")
+        self.assertIn("操作：切 9万 / 立直", detail)
+        self.assertNotIn("条件式", detail)
 
     def test_call_window_lists_skip_calls_and_kan_uncertainty(self):
         analysis = HandAnalysis(shanten=1, recommendations=[])
         value = ValueEstimate((), 0, 0)
         actions = (
             ActionEvaluation(ActionCandidate("skip"), True, "legal", 1, 8, (), "similar", "high", value, "recommended", ()),
+            ActionEvaluation(ActionCandidate("chi", "3m", ("1m", "2m"), source="left"), True, "legal", 1, 6, (), "lower", "high", value, "consider", ()),
             ActionEvaluation(ActionCandidate("pon", "red", ("red", "red"), source="right"), True, "legal", 1, 6, (), "lower", "high", value, "skip_preferred", ()),
             ActionEvaluation(ActionCandidate("minkan", "red", ("red",) * 3, source="right"), True, "legal", 1, 6, (), "unknown", "high", value, "consider", ()),
+            ActionEvaluation(ActionCandidate("chi", "3m", ("2m", "4m"), source="right"), False, "illegal", 1, 0, (), "unknown", "high", value, "illegal", ()),
         )
         event = RiverDiscardEvent(7, "red", "right", 1, 3)
 
@@ -79,10 +116,17 @@ class SuggestionOverlayFormattingTests(unittest.TestCase):
             analysis, DecisionReport(actions, actions[0].action), event
         )
 
-        self.assertEqual(title, "鸣牌窗口  右家切中")
+        self.assertEqual(title, "建议操作")
+        self.assertIn("右家切中", detail)
         self.assertIn("跳过", detail)
+        self.assertIn("吃（1万 2万）", detail)
+        self.assertNotIn("吃（2万 4万）", detail)
         self.assertIn("碰", detail)
-        self.assertIn("明杠", detail)
+        self.assertIn("杠", detail)
+        self.assertNotIn("明杠", detail)
+        self.assertLess(detail.index("吃"), detail.index("碰"))
+        self.assertLess(detail.index("碰"), detail.index("杠"))
+        self.assertLess(detail.index("杠"), detail.index("跳过"))
         self.assertIn("岭上牌未知", detail)
         self.assertNotIn("胡率", detail)
 

@@ -35,7 +35,8 @@ class WaitingStatePresentationTests(unittest.TestCase):
 
         title, detail = format_overlay_suggestion(analysis)
 
-        self.assertEqual(title, "等待进张")
+        self.assertEqual(title, "建议操作")
+        self.assertIn("操作：跳过（等待进张）", detail)
         self.assertNotIn("切牌", title)
         self.assertNotIn("切 -", f"{title}\n{detail}")
         self.assertIn("有效牌", detail)

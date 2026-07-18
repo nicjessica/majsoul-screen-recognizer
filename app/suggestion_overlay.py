@@ -43,9 +43,9 @@ def format_overlay_suggestion(
     if call_event is not None and decision is not None:
         return _format_call_window(decision, call_event)
     if analysis.shanten == -1:
-        return "已完成和牌形", "尚未判断役种、振听与是否可和"
+        return "建议操作", "操作：跳过\n已完成和牌形；尚未判断役种、振听与是否可和"
     if not analysis.recommendations:
-        return "暂无切牌建议", f"当前向听 {analysis.shanten}"
+        return "建议操作", f"操作：跳过\n当前向听 {analysis.shanten}"
 
     best = analysis.recommendations[0]
     effective = "、".join(tile_label(name) for name in best.effective_tiles[:8]) or "无"
@@ -53,7 +53,8 @@ def format_overlay_suggestion(
         effective += "…"
     if best.discard == "-":
         return (
-            "等待进张",
+            "建议操作",
+            f"操作：跳过（等待进张）\n"
             f"{best.resulting_shanten} 向听  ·  有效牌 {best.ukeire_count} 枚\n"
             f"进张：{effective}",
         )
@@ -62,7 +63,9 @@ def format_overlay_suggestion(
         alternatives = "备选：" + " / ".join(
             tile_label(item.discard) for item in analysis.recommendations[1:3]
         )
+    action_text = f"切 {tile_label(best.discard)}"
     detail = (
+        f"操作：{action_text}\n"
         f"{best.resulting_shanten} 向听  ·  有效牌 {best.ukeire_count} 枚\n"
         f"进张：{effective}"
     )
@@ -76,20 +79,23 @@ def format_overlay_suggestion(
         riichi = next((item for item in same_discard if item.action.kind == "riichi"), None)
         damaten = next((item for item in same_discard if item.action.kind == "damaten"), None)
         if riichi is not None and riichi.legality == "legal":
-            detail += "\n立直：条件已满足；默听可保留改良自由"
+            detail = detail.replace(f"操作：{action_text}", f"操作：{action_text} / 立直")
+            detail += "\n立直条件已满足；默听可保留改良自由"
         elif riichi is not None and riichi.legality == "unverified":
-            detail += "\n立直：点棒/余牌满足时可考虑；也可默听保留改良"
+            detail = detail.replace(f"操作：{action_text}", f"操作：{action_text} / 立直（条件式）")
+            detail += "\n点棒/余牌满足时可考虑立直；也可默听保留改良"
         elif damaten is not None:
             detail += "\n默听：保留改良自由；打点尚未完整计算"
-    return f"首选切牌  {tile_label(best.discard)}", detail
+    return "建议操作", detail
 
 
 def _format_call_window(
     decision: DecisionReport, event: RiverDiscardEvent
 ) -> tuple[str, str]:
     seat_labels = {"right": "右家", "across": "对家", "left": "左家"}
-    action_labels = {"skip": "跳过", "chi": "吃", "pon": "碰", "minkan": "明杠"}
-    actions: list[str] = []
+    action_labels = {"skip": "跳过", "chi": "吃", "pon": "碰", "minkan": "杠"}
+    actions: list[tuple[int, str]] = []
+    action_order = {"chi": 0, "pon": 1, "minkan": 2, "skip": 3}
     has_kan = False
     for evaluation in decision.evaluations:
         action = evaluation.action
@@ -98,15 +104,16 @@ def _format_call_window(
         label = action_labels[action.kind]
         if action.consumed_tiles:
             label += "（" + " ".join(tile_label(tile) for tile in action.consumed_tiles) + "）"
-        actions.append(label)
+        actions.append((action_order[action.kind], label))
         has_kan = has_kan or action.kind == "minkan"
-    detail = "可选：" + " / ".join(actions or ["跳过"])
-    if has_kan:
-        detail += "\n明杠后的岭上牌未知，不与跳过、吃碰作普通硬排序"
-    return (
-        f"鸣牌窗口  {seat_labels[event.source]}切{tile_label(event.tile)}",
-        detail,
+    sorted_labels = [label for _, label in sorted(actions)] or ["跳过"]
+    detail = (
+        f"{seat_labels[event.source]}切{tile_label(event.tile)}\n"
+        "操作：" + " / ".join(sorted_labels)
     )
+    if has_kan:
+        detail += "\n杠后的岭上牌未知，不与跳过、吃碰作普通硬排序"
+    return "建议操作", detail
 
 
 class SuggestionOverlay(QWidget):
