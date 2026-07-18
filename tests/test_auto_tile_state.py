@@ -22,6 +22,14 @@ class _StateTemplates:
         return [TileMatch(f"{max(code, 1)}m", score)][:limit]
 
 
+class _WhiteAwareStateTemplates(_StateTemplates):
+    def match_candidates(self, tile, limit=2):
+        code = int(tile[0, 0, 0])
+        if code in (12, 13):
+            return [TileMatch("white", 0.999), TileMatch("3s", 0.70)][:limit]
+        return super().match_candidates(tile, limit)
+
+
 def _region(x, y, width, height, frame_width=300, frame_height=60):
     return RelativeRegion(
         x / frame_width,
@@ -180,6 +188,28 @@ class AutoTileStateTests(unittest.TestCase):
 
         self.assertEqual(len(result.hand), 10)
         self.assertIsNone(result.draw)
+        self.assertEqual(result.open_meld_count, 1)
+
+    def test_blank_faced_white_dragons_are_confirmed_by_white_template(self):
+        recognizer, frame = _recognizer(13, False)
+        frame[9:21, 227:233] = 220
+        frame[9:21, 247:253] = 220
+        recognizer.templates = _WhiteAwareStateTemplates()
+
+        result = recognizer.recognize(frame)
+
+        self.assertEqual(len(result.hand), 13)
+        self.assertEqual(result.hand[-2:], ["white", "white"])
+        self.assertEqual(result.open_meld_count, 0)
+
+    def test_blank_placeholder_is_not_occupied_by_non_white_high_match(self):
+        recognizer, frame = _recognizer(10, False)
+        frame[0:30, 200:260] = 220
+        recognizer.templates = _StateTemplates({0: 1.0})
+
+        result = recognizer.recognize(frame)
+
+        self.assertEqual(len(result.hand), 10)
         self.assertEqual(result.open_meld_count, 1)
 
     def test_open_hand_extra_tile_can_occupy_terminal_hand_slot(self):

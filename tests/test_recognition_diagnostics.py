@@ -1,13 +1,17 @@
 import unittest
 from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import numpy as np
+from PIL import Image
 
 from recognizer.config import (
     MeldConfig,
     MeldTileSlotConfig,
     PlayerRiverLayoutConfig,
+    PlayerScoreLayoutConfig,
     RelativeRegion,
     RiverTileSlotConfig,
     default_config,
@@ -31,6 +35,30 @@ class _FakeCandidateTemplates:
 
 
 class RecognitionDiagnosticTests(unittest.TestCase):
+    def test_debug_tiles_include_normalized_across_score_crop(self):
+        recognizer = TileRecognizer.__new__(TileRecognizer)
+        recognizer.config = default_config()
+        recognizer.config.layout.hand_tile_count = 0
+        recognizer.config.layout.draw_tile_count = 0
+        recognizer.config.layout.dora_tile_count = 0
+        recognizer.config.layout.table_state.scores = [
+            PlayerScoreLayoutConfig(
+                "across",
+                RelativeRegion(0.25, 0.25, 0.5, 0.25),
+                "rotated_180",
+            )
+        ]
+        frame = np.arange(8 * 12 * 3, dtype=np.uint8).reshape(8, 12, 3)
+
+        with TemporaryDirectory() as directory:
+            output = recognizer.save_debug_tiles(frame, directory)
+            score_path = Path(output) / "table_score_across.png"
+
+            self.assertTrue(score_path.exists())
+            saved = np.asarray(Image.open(score_path))
+            expected = np.rot90(frame[2:4, 3:9], 2)
+            np.testing.assert_array_equal(saved, expected)
+
     def test_template_candidates_are_score_sorted_and_limited_to_two(self):
         library = TemplateLibrary.__new__(TemplateLibrary)
         library.templates_dir = None

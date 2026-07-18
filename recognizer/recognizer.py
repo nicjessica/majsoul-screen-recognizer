@@ -205,6 +205,24 @@ class TileRecognizer:
         hand_tiles = split_region(hand_region, 13)
         occupancy = [_tile_occupancy_features(tile) for tile in hand_tiles]
         occupancy_states = [_classify_occupancy(*features) for features in occupancy]
+        # White dragons have deliberately blank faces, so the cheap glyph
+        # heuristic can confuse them with Mahjong Soul's bright vacated-slot
+        # placeholders. Reconsider only that narrow bright/glyph-free class,
+        # and only when the white template itself clears the normal threshold.
+        for index, ((face_score, glyph_score), state) in enumerate(
+            zip(occupancy, occupancy_states)
+        ):
+            if state is not False or face_score < 0.55 or glyph_score > 0.018:
+                continue
+            candidates = self.templates.match_candidates(hand_tiles[index], limit=2)
+            best = candidates[0]
+            runner_up_score = candidates[1].score if len(candidates) > 1 else 0.0
+            if (
+                best.name == "white"
+                and best.score >= max(recognition.threshold, 0.95)
+                and best.score - runner_up_score >= 0.08
+            ):
+                occupancy_states[index] = True
         if any(state is None for state in occupancy_states):
             return self._defer_auto_state("手牌槽占位介于有牌与空槽阈值之间")
 

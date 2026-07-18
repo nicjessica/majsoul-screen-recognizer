@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import MagicMock, patch
 
 from app.main_window import (
     MainWindow,
@@ -6,7 +7,12 @@ from app.main_window import (
     RIVER_SELECT_SPECS,
     SEAT_LABELS,
 )
-from recognizer.config import PlayerRiverLayoutConfig, RelativeRegion, default_config
+from recognizer.config import (
+    PlayerRiverLayoutConfig,
+    PlayerScoreLayoutConfig,
+    RelativeRegion,
+    default_config,
+)
 from recognizer.geometry import ScreenRegion
 
 
@@ -90,6 +96,42 @@ class RiverUiHelperTests(unittest.TestCase):
                 ("across", "框选对家牌河"),
             ),
         )
+
+    def test_across_score_selection_replaces_old_region_and_saves_rotated_180(self):
+        window = MainWindow.__new__(MainWindow)
+        window.config = default_config()
+        window.config.game_region = ScreenRegion(left=100, top=200, width=1000, height=500)
+        old_region = RelativeRegion(0.1, 0.1, 0.1, 0.1)
+        window.config.layout.table_state.scores = [
+            PlayerScoreLayoutConfig("self", old_region),
+            PlayerScoreLayoutConfig("across", old_region, "upright"),
+        ]
+        window.pending_region = "table:score:across"
+        window.pending_score_orientation = "rotated_180"
+        window.selector_completed = False
+        window._invalidate_recognition_state = MagicMock()
+        window.region_label = MagicMock()
+        window.layout_label = MagicMock()
+        window.status_label = MagicMock()
+        window.region_text = MagicMock(return_value="region")
+        window.layout_text = MagicMock(return_value="layout")
+
+        with patch("app.main_window.save_config") as save:
+            window.on_region_selected(
+                ScreenRegion(left=600, top=300, width=200, height=100)
+            )
+
+        across = [
+            item
+            for item in window.config.layout.table_state.scores
+            if item.seat == "across"
+        ]
+        self.assertEqual(len(across), 1)
+        self.assertEqual(across[0].region, RelativeRegion(0.5, 0.2, 0.2, 0.2))
+        self.assertEqual(across[0].orientation, "rotated_180")
+        self.assertEqual(window.config.layout.table_state.scores[0].seat, "self")
+        save.assert_called_once_with(window.config)
+        window._invalidate_recognition_state.assert_called_once_with()
 
 
 if __name__ == "__main__":
