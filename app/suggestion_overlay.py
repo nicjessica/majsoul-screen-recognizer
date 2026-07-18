@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
 from mahjong.analyzer import HandAnalysis
 from mahjong.decision import DecisionReport
 from recognizer.geometry import ScreenRegion
+from recognizer.river_events import RiverDiscardEvent
 
 
 HONOR_LABELS = {
@@ -35,8 +36,12 @@ def tile_label(name: str) -> str:
 
 
 def format_overlay_suggestion(
-    analysis: HandAnalysis, decision: DecisionReport | None = None
+    analysis: HandAnalysis,
+    decision: DecisionReport | None = None,
+    call_event: RiverDiscardEvent | None = None,
 ) -> tuple[str, str]:
+    if call_event is not None and decision is not None:
+        return _format_call_window(decision, call_event)
     if analysis.shanten == -1:
         return "已完成和牌形", "尚未判断役种、振听与是否可和"
     if not analysis.recommendations:
@@ -77,6 +82,31 @@ def format_overlay_suggestion(
         elif damaten is not None:
             detail += "\n默听：保留改良自由；打点尚未完整计算"
     return f"首选切牌  {tile_label(best.discard)}", detail
+
+
+def _format_call_window(
+    decision: DecisionReport, event: RiverDiscardEvent
+) -> tuple[str, str]:
+    seat_labels = {"right": "右家", "across": "对家", "left": "左家"}
+    action_labels = {"skip": "跳过", "chi": "吃", "pon": "碰", "minkan": "明杠"}
+    actions: list[str] = []
+    has_kan = False
+    for evaluation in decision.evaluations:
+        action = evaluation.action
+        if not evaluation.legal or action.kind not in action_labels:
+            continue
+        label = action_labels[action.kind]
+        if action.consumed_tiles:
+            label += "（" + " ".join(tile_label(tile) for tile in action.consumed_tiles) + "）"
+        actions.append(label)
+        has_kan = has_kan or action.kind == "minkan"
+    detail = "可选：" + " / ".join(actions or ["跳过"])
+    if has_kan:
+        detail += "\n明杠后的岭上牌未知，不与跳过、吃碰作普通硬排序"
+    return (
+        f"鸣牌窗口  {seat_labels[event.source]}切{tile_label(event.tile)}",
+        detail,
+    )
 
 
 class SuggestionOverlay(QWidget):
@@ -137,8 +167,9 @@ class SuggestionOverlay(QWidget):
         position_x: float = 0.016,
         position_y: float = 0.022,
         decision: DecisionReport | None = None,
+        call_event: RiverDiscardEvent | None = None,
     ) -> None:
-        title, detail = format_overlay_suggestion(analysis, decision)
+        title, detail = format_overlay_suggestion(analysis, decision, call_event)
         self.title_label.setText(title)
         self.detail_label.setText(detail)
         self.adjustSize()

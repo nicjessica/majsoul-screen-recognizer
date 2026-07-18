@@ -26,7 +26,12 @@ from PySide6.QtWidgets import (
 from app.screen_select import ScreenRegionSelector
 from app.suggestion_overlay import SuggestionOverlay
 from mahjong.analyzer import analyze_hand
-from mahjong.decision import MeldState, RoundContext, evaluate_actions
+from mahjong.decision import (
+    MeldState,
+    RoundContext,
+    evaluate_actions,
+    generate_call_candidates,
+)
 from recognizer.capture import ScreenCapture
 from recognizer.config import (
     MELD_KINDS,
@@ -43,6 +48,7 @@ from recognizer.config import (
 )
 from recognizer.geometry import ScreenRegion
 from recognizer.recognizer import RecognitionError, TileRecognizer
+from recognizer.river_events import RiverDiscardEvent, RiverEventTracker
 from recognizer.stability import KeyRegionSnapshot, RecognitionStabilizer
 from recognizer.template_builder import build_templates_from_screenshot
 from recognizer.visible_tiles import collect_visible_tiles
@@ -75,6 +81,8 @@ class MainWindow(QMainWindow):
         self.capture_hidden = False
         self.force_publish_current = False
         self.stability = RecognitionStabilizer(required_observations=3)
+        self.river_events = RiverEventTracker()
+        self.active_river_event: RiverDiscardEvent | None = None
         self.selector_completed = False
         self.pending_melds: list[MeldConfig] | None = None
         self.pending_meld_slots: list[tuple[int, int]] = []
@@ -1123,6 +1131,8 @@ class MainWindow(QMainWindow):
         if clear_recognizer:
             self.recognizer = None
         self.stability.reset()
+        self.river_events.reset()
+        self.active_river_event = None
         self.overlay_result_stale = False
         self.suggestion_overlay.hide()
         if hasattr(self, "output"):
@@ -1279,6 +1289,7 @@ class MainWindow(QMainWindow):
                 update = self.stability.observe_reused()
         except RecognitionError as exc:
             update = self.stability.observe_error()
+            self.active_river_event = None
             debug_text = ""
             if frame is not None and self.recognizer is not None:
                 try:
@@ -1301,6 +1312,7 @@ class MainWindow(QMainWindow):
             self.finish_capture_display()
             return
         except Exception as exc:  # pragma: no cover - UI safety net
+            self.active_river_event = None
             self.status_label.setText("运行错误")
             self.output.setPlainText(f"{type(exc).__name__}: {exc}")
             self.suggestion_overlay.hide()
@@ -1313,6 +1325,16 @@ class MainWindow(QMainWindow):
             )
             self.output.setPlainText("尚无稳定结果，请保持画面不变。")
         elif update.just_published:
+            if self.force_publish_current:
+                # Manual recognition bypasses the three-observation gate.  It
+                # may seed a baseline, but must never manufacture a call event.
+                self.river_events.reset()
+                self.river_events.observe(update.published_result)
+                self.active_river_event = None
+            else:
+                self.active_river_event = self.river_events.observe(
+                    update.published_result
+                )
             prefix = "单次识别完成" if self.force_publish_current else "画面已稳定，识别完成"
             self._display_result(update.published_result, prefix)
         elif update.pending_count < self.stability.required_observations:
@@ -1353,12 +1375,29 @@ class MainWindow(QMainWindow):
                 open_meld_count=open_meld_count,
                 visible_tiles=visible_tiles,
             )
-            decision = evaluate_actions(
-                tiles,
-                melds=tuple(MeldState("unknown", (), True) for _ in range(open_meld_count)),
-                visible_tiles=visible_tiles,
-                context=RoundContext(dora_indicators=tuple(result.dora_indicators)),
-            )
+            melds = tuple(MeldState("unknown", (), True) for _ in range(open_meld_count))
+            if self.active_river_event is not None:
+                event = self.active_river_event
+                candidates = generate_call_candidates(tiles, event.tile, event.source)
+                call_visible_tiles = list(visible_tiles)
+                try:
+                    call_visible_tiles.remove(event.tile)
+                except ValueError:
+                    pass
+                decision = evaluate_actions(
+                    tiles,
+                    melds=melds,
+                    candidates=candidates,
+                    visible_tiles=call_visible_tiles,
+                    context=RoundContext(dora_indicators=tuple(result.dora_indicators)),
+                )
+            else:
+                decision = evaluate_actions(
+                    tiles,
+                    melds=melds,
+                    visible_tiles=visible_tiles,
+                    context=RoundContext(dora_indicators=tuple(result.dora_indicators)),
+                )
         except ValueError:
             self.suggestion_overlay.hide()
             return
@@ -1368,6 +1407,7 @@ class MainWindow(QMainWindow):
             self.config.overlay.position_x,
             self.config.overlay.position_y,
             decision,
+            self.active_river_event,
         )
         if self.overlay_result_stale:
             self.suggestion_overlay.mark_stale()

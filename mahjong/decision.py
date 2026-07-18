@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from itertools import combinations
 from typing import Literal
 
 from mahjong.analyzer import analyze_hand
@@ -234,6 +235,67 @@ def generate_state_candidates(
             candidates.append(ActionCandidate("damaten", discard_tile=discard))
             candidates.append(ActionCandidate("riichi", discard_tile=discard))
     return candidates
+
+
+def generate_call_candidates(
+    concealed_tiles: Sequence[str],
+    called_tile: str,
+    source: Literal["left", "across", "right"],
+) -> list[ActionCandidate]:
+    """Generate every strictly legal call shape for one opponent discard.
+
+    The first candidate is always ``skip``. Red fives are normalized only for
+    shape checks; ``consumed_tiles`` retains the actual tile names so callers
+    can distinguish consuming a red five from consuming a normal five.
+    """
+
+    if source not in {"left", "across", "right"}:
+        raise ValueError(f"鸣牌来源必须是对手方位: {source}")
+    normalized_called = normalize_tile(called_tile)
+    if normalized_called not in TILE_NAMES:
+        raise ValueError(f"未知牌名: {called_tile}")
+
+    raw_hand = list(concealed_tiles)
+    normalized_hand = [normalize_tile(tile) for tile in raw_hand]
+    _validate_tile_names(normalized_hand)
+    if Counter(normalized_hand)[normalized_called] >= 4:
+        raise ValueError(f"被鸣牌与暗牌合计超过 4 张: {normalized_called}")
+
+    candidates = [ActionCandidate("skip")]
+
+    if source == "left" and normalized_called in TILE_NAMES[:27]:
+        number = int(normalized_called[0])
+        suit = normalized_called[-1]
+        for start in range(max(1, number - 2), min(number, 7) + 1):
+            sequence = [f"{value}{suit}" for value in range(start, start + 3)]
+            needed = sequence.copy()
+            needed.remove(normalized_called)
+            for consumed in _actual_tile_selections(raw_hand, needed):
+                candidates.append(
+                    ActionCandidate("chi", called_tile, consumed, source=source)
+                )
+
+    matching = [tile for tile in raw_hand if normalize_tile(tile) == normalized_called]
+    for consumed in _unique_combinations(matching, 2):
+        candidates.append(ActionCandidate("pon", called_tile, consumed, source=source))
+    for consumed in _unique_combinations(matching, 3):
+        candidates.append(ActionCandidate("minkan", called_tile, consumed, source=source))
+    return candidates
+
+
+def _actual_tile_selections(
+    raw_hand: Sequence[str], normalized_needed: Sequence[str]
+) -> list[tuple[str, ...]]:
+    selections: list[tuple[str, ...]] = [()]
+    for needed in normalized_needed:
+        choices = sorted({tile for tile in raw_hand if normalize_tile(tile) == needed})
+        selections = [(*selection, choice) for selection in selections for choice in choices]
+    return list(dict.fromkeys(selections))
+
+
+def _unique_combinations(tiles: Sequence[str], count: int) -> list[tuple[str, ...]]:
+    canonical = (tuple(sorted(selection)) for selection in combinations(tiles, count))
+    return list(dict.fromkeys(canonical))
 
 
 def _evaluate_shape(

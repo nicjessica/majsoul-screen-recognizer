@@ -3,6 +3,7 @@ import unittest
 from app.suggestion_overlay import format_overlay_suggestion, tile_label
 from mahjong.analyzer import DiscardRecommendation, HandAnalysis
 from mahjong.decision import ActionCandidate, ActionEvaluation, DecisionReport, ValueEstimate
+from recognizer.river_events import RiverDiscardEvent
 
 
 class SuggestionOverlayFormattingTests(unittest.TestCase):
@@ -63,6 +64,27 @@ class SuggestionOverlayFormattingTests(unittest.TestCase):
 
         self.assertIn("点棒/余牌满足时可考虑", detail)
         self.assertIn("默听保留改良", detail)
+
+    def test_call_window_lists_skip_calls_and_kan_uncertainty(self):
+        analysis = HandAnalysis(shanten=1, recommendations=[])
+        value = ValueEstimate((), 0, 0)
+        actions = (
+            ActionEvaluation(ActionCandidate("skip"), True, "legal", 1, 8, (), "similar", "high", value, "recommended", ()),
+            ActionEvaluation(ActionCandidate("pon", "red", ("red", "red"), source="right"), True, "legal", 1, 6, (), "lower", "high", value, "skip_preferred", ()),
+            ActionEvaluation(ActionCandidate("minkan", "red", ("red",) * 3, source="right"), True, "legal", 1, 6, (), "unknown", "high", value, "consider", ()),
+        )
+        event = RiverDiscardEvent(7, "red", "right", 1, 3)
+
+        title, detail = format_overlay_suggestion(
+            analysis, DecisionReport(actions, actions[0].action), event
+        )
+
+        self.assertEqual(title, "鸣牌窗口  右家切中")
+        self.assertIn("跳过", detail)
+        self.assertIn("碰", detail)
+        self.assertIn("明杠", detail)
+        self.assertIn("岭上牌未知", detail)
+        self.assertNotIn("胡率", detail)
 
 
 if __name__ == "__main__":

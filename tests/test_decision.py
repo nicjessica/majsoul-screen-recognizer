@@ -5,6 +5,7 @@ from mahjong.decision import (
     MeldState,
     RoundContext,
     evaluate_actions,
+    generate_call_candidates,
     generate_state_candidates,
 )
 
@@ -90,6 +91,59 @@ class DecisionTests(unittest.TestCase):
         self.assertTrue(report.evaluations[1].legal)
         self.assertFalse(report.evaluations[2].legal)
         self.assertEqual(report.evaluations[0].value.guaranteed_han, 1)
+
+    def test_call_candidates_always_start_with_skip_and_obey_source(self):
+        hand = ["1m", "2m", "4m", "5m", "3p", "3p", "3p"]
+
+        left = generate_call_candidates(hand, "3m", "left")
+        across = generate_call_candidates(hand, "3m", "across")
+
+        self.assertEqual(left[0], ActionCandidate("skip"))
+        self.assertEqual(across[0], ActionCandidate("skip"))
+        self.assertEqual(
+            {item.consumed_tiles for item in left if item.kind == "chi"},
+            {("1m", "2m"), ("2m", "4m"), ("4m", "5m")},
+        )
+        self.assertFalse(any(item.kind == "chi" for item in across))
+
+    def test_call_candidates_generate_pon_and_minkan_only_with_enough_copies(self):
+        two = generate_call_candidates(["red", "red", "east"], "red", "right")
+        three = generate_call_candidates(["red", "red", "red"], "red", "across")
+
+        self.assertEqual([item.kind for item in two], ["skip", "pon"])
+        self.assertEqual([item.kind for item in three], ["skip", "pon", "minkan"])
+
+        call_hand = [
+            "1m", "2m", "3m", "2p", "3p", "4p", "3s", "4s", "5s",
+            "red", "red", "red", "east",
+        ]
+        report = evaluate_actions(call_hand, candidates=generate_call_candidates(
+            call_hand, "red", "across"
+        ))
+        kan = next(item for item in report.evaluations if item.action.kind == "minkan")
+        self.assertEqual(kan.relative_win_chance, "unknown")
+        self.assertEqual(kan.recommendation, "consider")
+
+    def test_call_candidates_preserve_red_five_consumption_without_duplicates(self):
+        candidates = generate_call_candidates(
+            ["3m", "4m", "5m", "5mr", "5m"], "5m", "left"
+        )
+
+        chi_consumed = [
+            item.consumed_tiles for item in candidates if item.kind == "chi"
+        ]
+        pon_consumed = [
+            item.consumed_tiles for item in candidates if item.kind == "pon"
+        ]
+        self.assertEqual(chi_consumed, [("3m", "4m")])
+        self.assertEqual(set(pon_consumed), {("5m", "5m"), ("5m", "5mr")})
+        self.assertEqual(len(pon_consumed), 2)
+
+    def test_call_candidates_reject_invalid_event_data(self):
+        with self.assertRaisesRegex(ValueError, "来源"):
+            generate_call_candidates(["1m", "2m"], "3m", "self")  # type: ignore[arg-type]
+        with self.assertRaisesRegex(ValueError, "未知牌名"):
+            generate_call_candidates(["1m", "2m"], "bogus", "left")
 
     def test_ankan_keeps_closed_hand_and_kakan_requires_existing_pon(self):
         ankan_hand = [
