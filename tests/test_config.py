@@ -19,6 +19,22 @@ from recognizer.geometry import ScreenRegion
 
 
 class ConfigTests(unittest.TestCase):
+    def test_overlay_position_round_trips_and_old_config_uses_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text("{}", encoding="utf-8")
+            old = load_config(path)
+            self.assertAlmostEqual(old.overlay.position_x, 0.016)
+            self.assertAlmostEqual(old.overlay.position_y, 0.022)
+
+            old.templates_dir = str(Path(tmp) / "templates")
+            old.overlay.position_x = 0.42
+            old.overlay.position_y = 0.31
+            save_config(old, path)
+            loaded = load_config(path)
+            self.assertAlmostEqual(loaded.overlay.position_x, 0.42)
+            self.assertAlmostEqual(loaded.overlay.position_y, 0.31)
+
     def test_round_trip_config_without_ui_dependencies(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"

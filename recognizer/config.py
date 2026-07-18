@@ -81,6 +81,13 @@ class LayoutConfig:
 @dataclass
 class RecognitionConfig:
     threshold: float = 0.78
+    auto_detect_tile_state: bool = True
+
+
+@dataclass
+class OverlayConfig:
+    position_x: float = 0.016
+    position_y: float = 0.022
 
 
 @dataclass
@@ -88,6 +95,7 @@ class AppConfig:
     game_region: ScreenRegion | None
     layout: LayoutConfig
     recognition: RecognitionConfig
+    overlay: OverlayConfig = field(default_factory=OverlayConfig)
     templates_dir: str = "data/templates"
     capture_interval_seconds: float = 0.75
 
@@ -163,13 +171,25 @@ def _config_from_dict(data: dict[str, Any]) -> AppConfig:
 
     recognition_data = data.get("recognition", {})
     recognition = RecognitionConfig(
-        threshold=float(recognition_data.get("threshold", default.recognition.threshold))
+        threshold=float(recognition_data.get("threshold", default.recognition.threshold)),
+        auto_detect_tile_state=bool(
+            recognition_data.get(
+                "auto_detect_tile_state",
+                default.recognition.auto_detect_tile_state,
+            )
+        ),
+    )
+    overlay_data = data.get("overlay", {})
+    overlay = OverlayConfig(
+        position_x=float(overlay_data.get("position_x", default.overlay.position_x)),
+        position_y=float(overlay_data.get("position_y", default.overlay.position_y)),
     )
 
     return AppConfig(
         game_region=region,
         layout=layout,
         recognition=recognition,
+        overlay=overlay,
         templates_dir=str(data.get("templates_dir", default.templates_dir)),
         capture_interval_seconds=float(
             data.get("capture_interval_seconds", default.capture_interval_seconds)
@@ -248,6 +268,10 @@ def validate_config(config: AppConfig) -> list[str]:
         errors.append("副露组数必须在 0 至 4 之间。")
     if not 0.0 <= config.recognition.threshold <= 1.0:
         errors.append("识别置信度阈值必须在 0 至 1 之间。")
+    if not 0.0 <= config.overlay.position_x <= 1.0:
+        errors.append("建议浮层水平位置必须在 0 至 1 之间。")
+    if not 0.0 <= config.overlay.position_y <= 1.0:
+        errors.append("建议浮层垂直位置必须在 0 至 1 之间。")
 
     seen_opponent_seats: set[str] = set()
     for player in layout.opponent_melds:

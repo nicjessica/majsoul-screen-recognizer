@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.screen_select import ScreenRegionSelector
+from app.suggestion_overlay import SuggestionOverlay
 from mahjong.analyzer import analyze_hand
 from recognizer.capture import ScreenCapture
 from recognizer.config import (
@@ -47,6 +48,14 @@ from recognizer.visible_tiles import collect_visible_tiles
 
 
 SEAT_LABELS = {"self": "自己", "right": "右家", "across": "对家", "left": "左家"}
+MELD_KIND_LABELS = {
+    "chi": "吃",
+    "pon": "碰",
+    "minkan": "明杠",
+    "ankan": "暗杠",
+    "kakan": "加杠",
+    "unknown": "未知",
+}
 
 
 class MainWindow(QMainWindow):
@@ -73,6 +82,9 @@ class MainWindow(QMainWindow):
         self.pending_river_slots: list[RiverTileSlotConfig] | None = None
         self.pending_river_slot_indexes: list[int] = []
         self.resume_timer_after_meld_config = False
+        self.suggestion_overlay = SuggestionOverlay()
+        self.suggestion_overlay.position_changed.connect(self.save_overlay_position)
+        self.overlay_result_stale = False
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.recognize_once)
@@ -113,6 +125,10 @@ class MainWindow(QMainWindow):
         counts_button = QPushButton("设置牌数")
         counts_button.clicked.connect(self.set_tile_counts)
 
+        self.auto_state_button = QPushButton()
+        self.auto_state_button.clicked.connect(self.toggle_auto_tile_state)
+        self._update_auto_state_button()
+
         dora_count_button = QPushButton("设置宝牌张数")
         dora_count_button.clicked.connect(self.set_dora_tile_count)
 
@@ -132,6 +148,9 @@ class MainWindow(QMainWindow):
         self.start_button.setObjectName("primaryButton")
         self.start_button.clicked.connect(self.toggle_recognition)
 
+        self.overlay_position_button = QPushButton("调整浮层位置")
+        self.overlay_position_button.clicked.connect(self.toggle_overlay_adjustment)
+
         once_button = QPushButton("识别一次")
         once_button.clicked.connect(self.recognize_once)
 
@@ -147,7 +166,7 @@ class MainWindow(QMainWindow):
             select_river_button, counts_button, dora_count_button,
             meld_structure_button, opponent_meld_structure_button,
             river_structure_button, threshold_button, once_button,
-            reload_button, build_templates_button,
+            reload_button, build_templates_button, self.auto_state_button,
         ):
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
@@ -168,6 +187,7 @@ class MainWindow(QMainWindow):
         run_bar.setSpacing(10)
         run_bar.addLayout(brand, 1)
         run_bar.addWidget(self.status_label)
+        run_bar.addWidget(self.overlay_position_button)
         run_bar.addWidget(once_button)
         run_bar.addWidget(self.start_button)
 
@@ -188,7 +208,7 @@ class MainWindow(QMainWindow):
         for index, button in enumerate((
             counts_button, dora_count_button, meld_structure_button,
             opponent_meld_structure_button, river_structure_button,
-            threshold_button,
+            threshold_button, self.auto_state_button,
         )):
             structure_grid.addWidget(button, index // 2, index % 2)
         structure_body.addLayout(structure_grid)
@@ -308,7 +328,7 @@ class MainWindow(QMainWindow):
             "3. 点击“设置牌数”，设置手牌、摸牌、副露可见牌及副露组数。\n"
             "4. 点击“识别一次”或“开始识别”。\n\n"
             f"当前模板目录: {template_dir.resolve()}\n"
-            "副露第一版只按从左到右识别牌，不判断吃、碰、杠和横置来源。\n"
+            "副露会根据可靠牌面与结构判断吃、碰和杠；不明确的形态显示为未知。\n"
         )
 
     def region_text(self) -> str:
@@ -349,6 +369,7 @@ class MainWindow(QMainWindow):
             f"实际翻开={layout.dora_tile_count}张; "
             f"副露 {meld_text}, 可见张数={layout.meld_tile_count}, "
             f"组数={layout.open_meld_count}, 结构={meld_structure}; "
+            f"牌数自动检测={'开' if self.config.recognition.auto_detect_tile_state else '关'}; "
             f"他家副露 {opponents}; 牌河 {rivers}"
         )
 
@@ -388,6 +409,7 @@ class MainWindow(QMainWindow):
         self.open_region_selector()
 
     def open_region_selector(self) -> None:
+        self.suggestion_overlay.hide()
         self.hide()
         self.selector = ScreenRegionSelector()
         self.selector.region_selected.connect(self.on_region_selected)
@@ -1031,6 +1053,22 @@ class MainWindow(QMainWindow):
         self.layout_label.setText(self.layout_text())
         self.status_label.setText("牌数已保存")
 
+    def toggle_auto_tile_state(self) -> None:
+        enabled = not self.config.recognition.auto_detect_tile_state
+        self.config.recognition.auto_detect_tile_state = enabled
+        save_config(self.config)
+        self._invalidate_recognition_state(clear_recognizer=False)
+        self._update_auto_state_button()
+        self.layout_label.setText(self.layout_text())
+        if enabled:
+            self.status_label.setText("已开启牌数自动检测；手动牌数仅作为回退")
+        else:
+            self.status_label.setText("已关闭牌数自动检测；使用手动牌数")
+
+    def _update_auto_state_button(self) -> None:
+        enabled = self.config.recognition.auto_detect_tile_state
+        self.auto_state_button.setText(f"牌数自动检测：{'开' if enabled else '关'}")
+
     def set_dora_tile_count(self) -> None:
         layout = self.config.layout
         value, ok = QInputDialog.getInt(
@@ -1084,6 +1122,8 @@ class MainWindow(QMainWindow):
         if clear_recognizer:
             self.recognizer = None
         self.stability.reset()
+        self.overlay_result_stale = False
+        self.suggestion_overlay.hide()
         if hasattr(self, "output"):
             self.output.setPlainText("配置或模板已变更，旧识别结果已失效，请重新识别。")
 
@@ -1101,6 +1141,25 @@ class MainWindow(QMainWindow):
         self.timer.start(int(self.config.capture_interval_seconds * 1000))
         self.start_button.setText("停止识别")
         self.status_label.setText("识别中")
+
+    def toggle_overlay_adjustment(self) -> None:
+        enabled = not self.suggestion_overlay.adjustment_mode
+        self.suggestion_overlay.set_adjustment_mode(enabled)
+        self.overlay_position_button.setText("完成位置调整" if enabled else "调整浮层位置")
+        if enabled:
+            if self.stability.published_result is not None:
+                self._display_overlay_analysis(self.stability.published_result)
+            self.status_label.setText("浮层位置调整中：拖动建议卡片，松开后自动保存")
+        else:
+            self.status_label.setText("浮层位置调整已完成，已恢复鼠标穿透")
+
+    def save_overlay_position(self, position_x: float, position_y: float) -> None:
+        self.config.overlay.position_x = position_x
+        self.config.overlay.position_y = position_y
+        save_config(self.config)
+        self.status_label.setText(
+            f"浮层位置已保存（{position_x:.3f}, {position_y:.3f}）"
+        )
 
     def reload_templates(self) -> None:
         self._invalidate_recognition_state()
@@ -1166,8 +1225,15 @@ class MainWindow(QMainWindow):
         self.force_publish_current = self.sender() is not self.timer
         self.capture_in_progress = True
         self.capture_hidden = self.should_hide_for_capture()
+        overlay_needs_hide = (
+            self.suggestion_overlay.isVisible()
+            and not self.suggestion_overlay.capture_excluded
+        )
+        if overlay_needs_hide:
+            self.suggestion_overlay.hide()
         if self.capture_hidden:
             self.hide()
+        if self.capture_hidden or overlay_needs_hide:
             QTimer.singleShot(180, self._recognize_once_after_hide)
         else:
             self._recognize_once_after_hide()
@@ -1197,7 +1263,11 @@ class MainWindow(QMainWindow):
             if self.recognizer is None:
                 self.recognizer = TileRecognizer(self.config)
             frame = self.capture.capture_region(self.config.game_region)
-            snapshot = KeyRegionSnapshot.from_frame(frame, self.config.layout)
+            snapshot = KeyRegionSnapshot.from_frame(
+                frame,
+                self.config.layout,
+                auto_detect_tile_state=self.config.recognition.auto_detect_tile_state,
+            )
             if self.force_publish_current or self.stability.needs_recognition(snapshot):
                 raw_result = self.recognizer.recognize(frame)
                 if self.force_publish_current:
@@ -1216,6 +1286,7 @@ class MainWindow(QMainWindow):
                 except Exception as debug_exc:
                     debug_text = f"\n\n保存诊断图片失败: {type(debug_exc).__name__}: {debug_exc}"
             if update.published_result is not None:
+                self.overlay_result_stale = True
                 self.status_label.setText("当前帧识别失败；下方为上次稳定结果")
                 self.output.setPlainText(
                     f"当前帧错误: {exc}{debug_text}\n\n"
@@ -1223,6 +1294,7 @@ class MainWindow(QMainWindow):
                     + self._format_result_text(update.published_result, "上次稳定识别结果")
                 )
             else:
+                self.suggestion_overlay.hide()
                 self.status_label.setText("识别失败")
                 self.output.setPlainText(str(exc) + debug_text)
             self.finish_capture_display()
@@ -1230,6 +1302,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # pragma: no cover - UI safety net
             self.status_label.setText("运行错误")
             self.output.setPlainText(f"{type(exc).__name__}: {exc}")
+            self.suggestion_overlay.hide()
             self.finish_capture_display()
             return
 
@@ -1242,6 +1315,8 @@ class MainWindow(QMainWindow):
             prefix = "单次识别完成" if self.force_publish_current else "画面已稳定，识别完成"
             self._display_result(update.published_result, prefix)
         elif update.pending_count < self.stability.required_observations:
+            self.overlay_result_stale = True
+            self.suggestion_overlay.mark_stale()
             self.status_label.setText(
                 f"检测到新画面，正在确认（{update.pending_count}/3）；下方为上次稳定结果"
             )
@@ -1259,6 +1334,33 @@ class MainWindow(QMainWindow):
             status += "；副露部分未知但牌效分析已继续"
         self.status_label.setText(status)
         self.output.setPlainText(self._format_result_text(result))
+        self.overlay_result_stale = False
+        self._display_overlay_analysis(result)
+
+    def _display_overlay_analysis(self, result) -> None:
+        if self.config.game_region is None:
+            self.suggestion_overlay.hide()
+            return
+        tiles = list(result.hand)
+        if result.draw:
+            tiles.append(result.draw)
+        try:
+            analysis = analyze_hand(
+                tiles,
+                open_meld_count=self._effective_open_meld_count(result),
+                visible_tiles=collect_visible_tiles(result),
+            )
+        except ValueError:
+            self.suggestion_overlay.hide()
+            return
+        self.suggestion_overlay.show_analysis(
+            analysis,
+            self.config.game_region,
+            self.config.overlay.position_x,
+            self.config.overlay.position_y,
+        )
+        if self.overlay_result_stale:
+            self.suggestion_overlay.mark_stale()
 
     def _format_result_text(self, result, title: str = "识别结果") -> str:
         tiles = list(result.hand)
@@ -1268,14 +1370,21 @@ class MainWindow(QMainWindow):
         try:
             analysis = analyze_hand(
                 tiles,
-                open_meld_count=self.config.layout.open_meld_count,
+                open_meld_count=self._effective_open_meld_count(result),
                 visible_tiles=collect_visible_tiles(result),
             )
             analysis_text = self.format_analysis(analysis)
         except ValueError as exc:
             analysis_text = f"牌效分析不可用: {exc}"
 
-        meld_text = " ".join(result.meld_tiles) if result.meld_tiles else "-"
+        meld_lines = []
+        for index, meld in enumerate(result.melds, start=1):
+            names = " ".join(tile.name or "?" for tile in meld.tiles) or "-"
+            kind = MELD_KIND_LABELS.get(meld.kind, meld.kind)
+            meld_lines.append(f"  第 {index} 组 {kind}: {names}")
+        meld_text = "\n" + "\n".join(meld_lines) if meld_lines else (
+            " ".join(result.meld_tiles) if result.meld_tiles else "-"
+        )
         if result.meld_error:
             meld_text += f"（部分未知：{result.meld_error}）"
         opponent_lines = []
@@ -1307,6 +1416,9 @@ class MainWindow(QMainWindow):
         river_text = ("\n".join(river_lines) + "\n") if river_lines else ""
         return (
             f"{title}\n"
+            f"牌数状态: 手牌 {len(result.hand)} + 摸牌 {1 if result.draw else 0}, "
+            f"副露 {self._effective_open_meld_count(result)} 组"
+            f"{'（自动检测）' if result.open_meld_count is not None and self.config.recognition.auto_detect_tile_state else ''}\n"
             f"手牌: {' '.join(result.hand) if result.hand else '-'}\n"
             f"摸牌: {result.draw or '-'}\n"
             f"宝牌: {' '.join(result.dora_indicators) if result.dora_indicators else '-'}\n"
@@ -1318,11 +1430,25 @@ class MainWindow(QMainWindow):
             f"{analysis_text}"
         )
 
+    def _effective_open_meld_count(self, result) -> int:
+        if result.open_meld_count is not None:
+            return result.open_meld_count
+        return self.config.layout.open_meld_count
+
     def finish_capture_display(self) -> None:
         self.capture_in_progress = False
         if self.capture_hidden:
             self.show()
+        if (
+            self.stability.published_result is not None
+            and not self.suggestion_overlay.isVisible()
+        ):
+            self._display_overlay_analysis(self.stability.published_result)
         self.capture_hidden = False
+
+    def closeEvent(self, event) -> None:
+        self.suggestion_overlay.close()
+        super().closeEvent(event)
 
     @staticmethod
     def format_analysis(analysis) -> str:

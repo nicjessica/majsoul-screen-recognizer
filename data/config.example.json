@@ -30,7 +30,12 @@
     "rivers": []
   },
   "recognition": {
-    "threshold": 0.78
+    "threshold": 0.78,
+    "auto_detect_tile_state": true
+  },
+  "overlay": {
+    "position_x": 0.016,
+    "position_y": 0.022
   },
   "templates_dir": "data/templates",
   "capture_interval_seconds": 0.75

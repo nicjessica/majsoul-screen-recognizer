@@ -63,3 +63,4 @@ class RecognitionResult:
     melds: list[MeldRecognition] = field(default_factory=list)
     opponent_melds: list[PlayerMeldRecognition] = field(default_factory=list)
     rivers: list[PlayerRiverRecognition] = field(default_factory=list)
+    open_meld_count: int | None = None

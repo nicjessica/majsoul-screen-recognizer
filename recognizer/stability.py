@@ -14,15 +14,23 @@ class KeyRegionSnapshot:
     regions: dict[str, np.ndarray]
 
     @classmethod
-    def from_frame(cls, frame: np.ndarray, layout: LayoutConfig) -> KeyRegionSnapshot:
+    def from_frame(
+        cls,
+        frame: np.ndarray,
+        layout: LayoutConfig,
+        *,
+        auto_detect_tile_state: bool = False,
+    ) -> KeyRegionSnapshot:
         active_regions: list[tuple[str, RelativeRegion]] = []
-        if layout.hand_tile_count > 0:
+        if auto_detect_tile_state or layout.hand_tile_count > 0:
             active_regions.append(("hand", layout.hand_region))
-        if layout.draw_tile_count > 0:
+        if auto_detect_tile_state or layout.draw_tile_count > 0:
             active_regions.append(("draw", layout.draw_region))
         if layout.dora_tile_count > 0:
             active_regions.append(("dora", layout.dora_region))
-        if layout.meld_region is not None and (layout.meld_tile_count > 0 or layout.melds):
+        if layout.meld_region is not None and (
+            auto_detect_tile_state or layout.meld_tile_count > 0 or layout.melds
+        ):
             active_regions.append(("meld", layout.meld_region))
         for player in layout.opponent_melds:
             if player.region is not None and (player.tile_count > 0 or player.melds):
@@ -91,6 +99,7 @@ def result_key(result: RecognitionResult) -> tuple[object, ...]:
     return (
         tuple(result.hand),
         result.draw,
+        result.open_meld_count,
         tuple(result.dora_indicators),
         meld_key,
         river_key,
