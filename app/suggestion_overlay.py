@@ -8,6 +8,7 @@ from PySide6.QtGui import QCursor, QGuiApplication, QMouseEvent
 from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
 
 from mahjong.analyzer import HandAnalysis
+from mahjong.decision import DecisionReport
 from recognizer.geometry import ScreenRegion
 
 
@@ -33,7 +34,9 @@ def tile_label(name: str) -> str:
     return name
 
 
-def format_overlay_suggestion(analysis: HandAnalysis) -> tuple[str, str]:
+def format_overlay_suggestion(
+    analysis: HandAnalysis, decision: DecisionReport | None = None
+) -> tuple[str, str]:
     if analysis.shanten == -1:
         return "已完成和牌形", "尚未判断役种、振听与是否可和"
     if not analysis.recommendations:
@@ -60,6 +63,19 @@ def format_overlay_suggestion(analysis: HandAnalysis) -> tuple[str, str]:
     )
     if alternatives:
         detail += f"\n{alternatives}"
+    if decision is not None:
+        same_discard = [
+            item for item in decision.evaluations
+            if item.action.discard_tile == best.discard
+        ]
+        riichi = next((item for item in same_discard if item.action.kind == "riichi"), None)
+        damaten = next((item for item in same_discard if item.action.kind == "damaten"), None)
+        if riichi is not None and riichi.legality == "legal":
+            detail += "\n立直：条件已满足；默听可保留改良自由"
+        elif riichi is not None and riichi.legality == "unverified":
+            detail += "\n立直：点棒/余牌满足时可考虑；也可默听保留改良"
+        elif damaten is not None:
+            detail += "\n默听：保留改良自由；打点尚未完整计算"
     return f"首选切牌  {tile_label(best.discard)}", detail
 
 
@@ -120,8 +136,9 @@ class SuggestionOverlay(QWidget):
         game_region: ScreenRegion,
         position_x: float = 0.016,
         position_y: float = 0.022,
+        decision: DecisionReport | None = None,
     ) -> None:
-        title, detail = format_overlay_suggestion(analysis)
+        title, detail = format_overlay_suggestion(analysis, decision)
         self.title_label.setText(title)
         self.detail_label.setText(detail)
         self.adjustSize()

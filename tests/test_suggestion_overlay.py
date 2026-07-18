@@ -2,6 +2,7 @@ import unittest
 
 from app.suggestion_overlay import format_overlay_suggestion, tile_label
 from mahjong.analyzer import DiscardRecommendation, HandAnalysis
+from mahjong.decision import ActionCandidate, ActionEvaluation, DecisionReport, ValueEstimate
 
 
 class SuggestionOverlayFormattingTests(unittest.TestCase):
@@ -37,6 +38,31 @@ class SuggestionOverlayFormattingTests(unittest.TestCase):
 
         self.assertEqual(title, "暂无切牌建议")
         self.assertEqual(detail, "当前向听 2")
+
+    def test_overlay_marks_riichi_as_conditional_when_round_data_is_missing(self):
+        analysis = HandAnalysis(
+            shanten=1,
+            recommendations=[DiscardRecommendation("9m", 0, 8, ["5s", "8s"], "best")],
+        )
+        action = ActionCandidate("riichi", discard_tile="9m")
+        decision = DecisionReport((ActionEvaluation(
+            action=action,
+            legal=True,
+            legality="unverified",
+            resulting_shanten=0,
+            ukeire_count=8,
+            effective_tiles=("5s", "8s"),
+            relative_win_chance="similar",
+            win_chance_uncertainty="high",
+            value=ValueEstimate(("riichi",), 1, 0),
+            recommendation="consider",
+            reasons=("点棒或牌山余量未识别",),
+        ),), action)
+
+        _, detail = format_overlay_suggestion(analysis, decision)
+
+        self.assertIn("点棒/余牌满足时可考虑", detail)
+        self.assertIn("默听保留改良", detail)
 
 
 if __name__ == "__main__":

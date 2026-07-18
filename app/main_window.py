@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from app.screen_select import ScreenRegionSelector
 from app.suggestion_overlay import SuggestionOverlay
 from mahjong.analyzer import analyze_hand
+from mahjong.decision import MeldState, RoundContext, evaluate_actions
 from recognizer.capture import ScreenCapture
 from recognizer.config import (
     MELD_KINDS,
@@ -1345,10 +1346,18 @@ class MainWindow(QMainWindow):
         if result.draw:
             tiles.append(result.draw)
         try:
+            open_meld_count = self._effective_open_meld_count(result)
+            visible_tiles = collect_visible_tiles(result)
             analysis = analyze_hand(
                 tiles,
-                open_meld_count=self._effective_open_meld_count(result),
-                visible_tiles=collect_visible_tiles(result),
+                open_meld_count=open_meld_count,
+                visible_tiles=visible_tiles,
+            )
+            decision = evaluate_actions(
+                tiles,
+                melds=tuple(MeldState("unknown", (), True) for _ in range(open_meld_count)),
+                visible_tiles=visible_tiles,
+                context=RoundContext(dora_indicators=tuple(result.dora_indicators)),
             )
         except ValueError:
             self.suggestion_overlay.hide()
@@ -1358,6 +1367,7 @@ class MainWindow(QMainWindow):
             self.config.game_region,
             self.config.overlay.position_x,
             self.config.overlay.position_y,
+            decision,
         )
         if self.overlay_result_stale:
             self.suggestion_overlay.mark_stale()
