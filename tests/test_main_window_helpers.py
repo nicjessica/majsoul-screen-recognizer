@@ -2,6 +2,7 @@ import unittest
 from types import SimpleNamespace
 
 from app.main_window import MainWindow
+from mahjong.analyzer import analyze_hand
 from recognizer.config import PlayerMeldLayoutConfig, RelativeRegion, default_config
 from recognizer.geometry import ScreenRegion
 
@@ -77,6 +78,27 @@ class MainWindowHelperTests(unittest.TestCase):
         self.assertAlmostEqual(relative.y, 0.25)
         self.assertAlmostEqual(relative.width, 0.25)
         self.assertAlmostEqual(relative.height, 0.5)
+
+    def test_format_analysis_explains_when_seven_pairs_is_the_best_shape(self):
+        analysis = analyze_hand([
+            "1m", "1m", "4s", "4s", "7s", "7s", "8s", "8s",
+            "east", "east", "north", "white", "red", "9s",
+        ])
+
+        text = MainWindow.format_analysis(analysis)
+
+        self.assertIn("一般形 2", text)
+        self.assertIn("七对子 1", text)
+        self.assertIn("当前最优形：七对子", text)
+
+    def test_table_and_strategy_status_distinguish_missing_inputs(self):
+        self.assertEqual(MainWindow._table_field_text("No score templates available.", True), "?（缺模板）")
+        self.assertEqual(MainWindow._table_field_text(None, False), "?（未框选）")
+        self.assertIn("未启用", MainWindow._strategy_text({"self": 25000}))
+        self.assertIn(
+            "速度优先",
+            MainWindow._strategy_text({"self": 25000, "right": 30000, "across": 25000, "left": 25000}),
+        )
 
 
 if __name__ == "__main__":

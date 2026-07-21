@@ -94,6 +94,41 @@ class TemplateMatchTests(unittest.TestCase):
             self.assertEqual(library.match(tile_rgb), candidates[0])
             self.assertEqual(library.match_candidates(tile_rgb, limit=0), [])
 
+    @unittest.skipIf(importlib.util.find_spec("cv2") is None, "opencv-python is not installed")
+    def test_library_batch_cache_preserves_public_match_scores_and_ranking(self):
+        import cv2
+        import numpy as np
+
+        from recognizer.templates import TemplateLibrary, match_score
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            first = np.full((120, 80, 3), (225, 225, 225), dtype=np.uint8)
+            cv2.circle(first, (28, 42), 16, (40, 110, 230), -1)
+            second = np.full((134, 80, 3), (225, 225, 225), dtype=np.uint8)
+            second[:120] = first
+            third = np.full((110, 90, 3), (225, 225, 225), dtype=np.uint8)
+            cv2.rectangle(third, (20, 25), (68, 82), (230, 60, 40), -1)
+            cv2.imwrite(str(directory / "first.png"), first)
+            cv2.imwrite(str(directory / "second.png"), second)
+            cv2.imwrite(str(directory / "third.png"), third)
+            library = TemplateLibrary(directory)
+            tile_rgb = cv2.cvtColor(first, cv2.COLOR_BGR2RGB)
+            tile_bgr = cv2.cvtColor(tile_rgb, cv2.COLOR_RGB2BGR)
+
+            candidates = library.match_candidates(tile_rgb, limit=3)
+            expected = sorted(
+                (
+                    (name, match_score(tile_bgr, template))
+                    for name, template in library.templates.items()
+                ),
+                key=lambda item: (-item[1], item[0]),
+            )
+
+            self.assertEqual([item.name for item in candidates], [name for name, _ in expected])
+            for candidate, (_, score) in zip(candidates, expected, strict=True):
+                self.assertAlmostEqual(candidate.score, score, places=7)
+
 
 if __name__ == "__main__":
     unittest.main()

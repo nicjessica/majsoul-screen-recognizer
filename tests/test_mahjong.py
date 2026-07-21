@@ -26,6 +26,32 @@ class MahjongAnalysisTests(unittest.TestCase):
         first = analysis.recommendations[0]
         self.assertLessEqual(first.resulting_shanten, analysis.recommendations[-1].resulting_shanten)
 
+    def test_screenshot_hand_exposes_chiitoitsu_breakdown_without_changing_sort(self):
+        tiles = [
+            "1m", "1m", "4s", "4s", "7s", "7s", "8s", "8s",
+            "east", "east", "north", "white", "red", "9s",
+        ]
+
+        analysis = analyze_hand(tiles)
+
+        self.assertEqual(analysis.shanten, 1)
+        self.assertIsNotNone(analysis.breakdown)
+        assert analysis.breakdown is not None
+        self.assertEqual(analysis.breakdown.normal, 2)
+        self.assertEqual(analysis.breakdown.chiitoitsu, 1)
+        self.assertEqual(analysis.breakdown.kokushi, 6)
+        self.assertEqual(
+            [item.discard for item in analysis.recommendations[:4]],
+            ["9s", "north", "white", "red"],
+        )
+        self.assertTrue(all(
+            (item.resulting_shanten, item.ukeire_count) == (1, 9)
+            for item in analysis.recommendations[:4]
+        ))
+        self.assertTrue(all(
+            item.resulting_shanten == 2 for item in analysis.recommendations[4:]
+        ))
+
     def test_invalid_tile_count(self):
         with self.assertRaises(ValueError):
             analyze_hand(["1m", "2m"])

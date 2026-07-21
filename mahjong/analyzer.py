@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
-from mahjong.shanten import calculate_shanten
+from mahjong.shanten import ShantenBreakdown, calculate_shanten, calculate_shanten_breakdown
 from mahjong.tiles import INDEX_TO_TILE, TILE_NAMES, normalize_tile, tiles_to_counts
 
 
@@ -20,6 +20,7 @@ class DiscardRecommendation:
 class HandAnalysis:
     shanten: int
     recommendations: list[DiscardRecommendation]
+    breakdown: ShantenBreakdown | None = None
 
 
 def analyze_hand(
@@ -41,7 +42,12 @@ def analyze_hand(
             f"当前 {tile_count} 张"
         )
 
-    current_shanten = calculate_shanten(counts, open_meld_count)
+    breakdown = calculate_shanten_breakdown(counts, open_meld_count)
+    current_shanten = min(
+        value
+        for value in (breakdown.normal, breakdown.chiitoitsu, breakdown.kokushi)
+        if value is not None
+    )
     recommendations: list[DiscardRecommendation] = []
 
     if tile_count == expected_counts[0]:
@@ -57,7 +63,11 @@ def analyze_hand(
                 reason="当前为摸牌前状态，列出能降低向听的有效牌",
             )
         )
-        return HandAnalysis(shanten=current_shanten, recommendations=recommendations)
+        return HandAnalysis(
+            shanten=current_shanten,
+            recommendations=recommendations,
+            breakdown=breakdown,
+        )
 
     for discard in sorted(set(normalized), key=TILE_NAMES.index):
         discard_index = TILE_NAMES.index(discard)
@@ -84,7 +94,11 @@ def analyze_hand(
     recommendations.sort(
         key=lambda item: (item.resulting_shanten, -item.ukeire_count, TILE_NAMES.index(item.discard))
     )
-    return HandAnalysis(shanten=current_shanten, recommendations=recommendations)
+    return HandAnalysis(
+        shanten=current_shanten,
+        recommendations=recommendations,
+        breakdown=breakdown,
+    )
 
 
 def effective_draws(

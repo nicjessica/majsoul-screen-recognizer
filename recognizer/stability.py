@@ -9,6 +9,15 @@ from recognizer.config import LayoutConfig, RelativeRegion
 from recognizer.models import RecognitionResult
 
 
+# A full-region mean can conceal a meaningful change confined to a few of the
+# 32x32 snapshot pixels.  Four-by-four blocks keep the check cheap while
+# catching a tile face or score digit changing inside one small part of a
+# region.  The block threshold is deliberately higher than ordinary antialias
+# noise, and remains independent from the global MAD threshold.
+_LOCAL_BLOCK_SIZE = 4
+_LOCAL_BLOCK_MAD_THRESHOLD = 12.0
+
+
 @dataclass(frozen=True)
 class KeyRegionSnapshot:
     regions: dict[str, np.ndarray]
@@ -57,15 +66,7 @@ class KeyRegionSnapshot:
         if self.regions.keys() != other.regions.keys():
             return False
         return all(
-            float(
-                np.mean(
-                    np.abs(
-                        self.regions[name].astype(np.float32)
-                        - other.regions[name].astype(np.float32)
-                    )
-                )
-            )
-            <= max_mad
+            _regions_are_equivalent(self.regions[name], other.regions[name], max_mad)
             for name in self.regions
         )
 
@@ -131,15 +132,23 @@ class StabilityUpdate:
 
 
 class RecognitionStabilizer:
-    def __init__(self, required_observations: int = 3) -> None:
+    def __init__(
+        self,
+        required_observations: int = 3,
+        max_reuses_before_recognition: int = 4,
+    ) -> None:
         if required_observations <= 0:
             raise ValueError("required_observations 必须大于 0")
+        if max_reuses_before_recognition < 0:
+            raise ValueError("最大复用次数不能小于 0")
         self.required_observations = required_observations
+        self.max_reuses_before_recognition = max_reuses_before_recognition
         self.reset()
 
     def needs_recognition(self, snapshot: KeyRegionSnapshot) -> bool:
         return (
             self._retry_required
+            or self.reuse_count >= self.max_reuses_before_recognition
             or self.last_success_snapshot is None
             or not self.last_success_snapshot.is_equivalent(snapshot)
         )
@@ -152,11 +161,13 @@ class RecognitionStabilizer:
         self.last_success_snapshot = snapshot
         self.raw_result = result
         self._retry_required = False
+        self.reuse_count = 0
         return self._observe(result, reused=False)
 
     def observe_reused(self) -> StabilityUpdate:
         if self.raw_result is None:
             raise RuntimeError("尚无成功识别结果，不能复用")
+        self.reuse_count += 1
         return self._observe(self.raw_result, reused=True)
 
     def publish_success(
@@ -172,6 +183,7 @@ class RecognitionStabilizer:
         self.pending_result = result
         self.published_result = result
         self._retry_required = False
+        self.reuse_count = 0
         return self._update(just_published=True, reused=False)
 
     def observe_error(self) -> StabilityUpdate:
@@ -186,6 +198,7 @@ class RecognitionStabilizer:
         self.pending_result: RecognitionResult | None = None
         self.published_result: RecognitionResult | None = None
         self._retry_required = False
+        self.reuse_count = 0
 
     def _observe(self, result: RecognitionResult, reused: bool) -> StabilityUpdate:
         key = result_key(result)
@@ -229,3 +242,25 @@ def _crop_relative(frame: np.ndarray, region: RelativeRegion) -> np.ndarray:
 def _normalized_grayscale(region: np.ndarray) -> np.ndarray:
     image = Image.fromarray(region.astype(np.uint8)).convert("L")
     return np.asarray(image.resize((32, 32), Image.Resampling.BILINEAR), dtype=np.uint8)
+
+
+def _regions_are_equivalent(
+    first: np.ndarray,
+    second: np.ndarray,
+    max_mad: float,
+) -> bool:
+    difference = np.abs(first.astype(np.float32) - second.astype(np.float32))
+    if float(np.mean(difference)) > max_mad:
+        return False
+    return _max_local_mad(difference) <= _LOCAL_BLOCK_MAD_THRESHOLD
+
+
+def _max_local_mad(difference: np.ndarray) -> float:
+    """Return the highest average difference in a small local snapshot block."""
+    height, width = difference.shape
+    block = _LOCAL_BLOCK_SIZE
+    maxima = 0.0
+    for top in range(0, height, block):
+        for left in range(0, width, block):
+            maxima = max(maxima, float(np.mean(difference[top : top + block, left : left + block])))
+    return maxima

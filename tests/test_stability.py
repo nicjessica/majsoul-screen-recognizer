@@ -95,6 +95,15 @@ class KeyRegionSnapshotTests(unittest.TestCase):
         snapshot = KeyRegionSnapshot.from_frame(np.zeros((20, 20, 3), dtype=np.uint8), config.layout)
         self.assertEqual(snapshot.regions.keys(), {"hand", "river:self", "river:across"})
 
+    def test_snapshot_detects_small_local_change_when_global_mad_is_low(self):
+        first = KeyRegionSnapshot({"hand": np.zeros((32, 32), dtype=np.uint8)})
+        changed = np.zeros((32, 32), dtype=np.uint8)
+        changed[8:10, 12:14] = 255
+        second = KeyRegionSnapshot({"hand": changed})
+
+        self.assertLess(float(np.mean(changed)), 2.0)
+        self.assertFalse(first.is_equivalent(second))
+
 
 class RecognitionStabilizerTests(unittest.TestCase):
     def setUp(self):
@@ -189,6 +198,24 @@ class RecognitionStabilizerTests(unittest.TestCase):
     def test_required_observations_must_be_positive(self):
         with self.assertRaises(ValueError):
             RecognitionStabilizer(0)
+
+    def test_negative_max_reuses_is_rejected(self):
+        with self.assertRaises(ValueError):
+            RecognitionStabilizer(max_reuses_before_recognition=-1)
+
+    def test_reused_frame_is_periodically_forced_to_be_recognized(self):
+        stabilizer = RecognitionStabilizer(max_reuses_before_recognition=2)
+        result = _result()
+
+        stabilizer.observe_success(self.snapshot, result)
+        self.assertFalse(stabilizer.needs_recognition(self.snapshot))
+        stabilizer.observe_reused()
+        self.assertFalse(stabilizer.needs_recognition(self.snapshot))
+        stabilizer.observe_reused()
+
+        self.assertTrue(stabilizer.needs_recognition(self.snapshot))
+        stabilizer.observe_success(self.snapshot, result)
+        self.assertFalse(stabilizer.needs_recognition(self.snapshot))
 
     def test_manual_publish_seeds_stable_baseline(self):
         stabilizer = RecognitionStabilizer(required_observations=3)

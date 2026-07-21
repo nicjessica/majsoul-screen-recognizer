@@ -24,6 +24,7 @@ ActionKind = Literal[
 RelativeWinChance = Literal["higher", "similar", "lower", "unknown"]
 Recommendation = Literal["recommended", "consider", "skip_preferred", "illegal"]
 Legality = Literal["legal", "illegal", "unverified"]
+StrategyMode = Literal["neutral", "speed_priority"]
 
 CALL_KINDS = {"chi", "pon", "minkan"}
 KAN_KINDS = {"minkan", "ankan", "kakan"}
@@ -44,6 +45,7 @@ class RoundContext:
     seat_wind: str | None = None
     round_wind: str | None = None
     points: int | None = None
+    opponent_points: tuple[int | None, int | None, int | None] = (None, None, None)
     remaining_draws: int | None = None
     already_riichi: bool = False
     dora_indicators: tuple[str, ...] = ()
@@ -103,6 +105,7 @@ class DecisionReport:
         "和率仅按向听数和有效牌作相对比较，不是概率预测",
         "未识别巡目、点棒差、危险度和完整役种时，不给出精确番符与点数",
     )
+    strategy_mode: StrategyMode = "neutral"
 
 
 @dataclass
@@ -142,6 +145,7 @@ def evaluate_actions(
     _validate_melds(normalized_melds)
     _validate_known_copies(normalized_hand, normalized_melds)
     _validate_winds(context)
+    _validate_opponent_points(context)
     open_meld_count = len(normalized_melds)
     if open_meld_count > 4:
         raise ValueError("固定面子不能超过 4 组")
@@ -201,8 +205,9 @@ def evaluate_actions(
             )
         )
 
-    preferred = _pick_preferred(evaluations)
-    return DecisionReport(tuple(evaluations), preferred)
+    strategy_mode = _strategy_mode(context)
+    preferred = _pick_preferred(evaluations, strategy_mode)
+    return DecisionReport(tuple(evaluations), preferred, strategy_mode=strategy_mode)
 
 
 def generate_state_candidates(
@@ -558,22 +563,48 @@ def _recommendation(
     return "skip_preferred"
 
 
-def _pick_preferred(evaluations: Sequence[ActionEvaluation]) -> ActionCandidate | None:
+def _pick_preferred(
+    evaluations: Sequence[ActionEvaluation],
+    strategy_mode: StrategyMode = "neutral",
+) -> ActionCandidate | None:
     legal = [item for item in evaluations if item.legal]
     if not legal:
         return None
     rank = {"recommended": 0, "consider": 1, "skip_preferred": 2, "illegal": 3}
     kind_rank = {"discard": 0, "skip": 1, "riichi": 2, "damaten": 3}
-    best = min(
-        legal,
-        key=lambda item: (
-            rank[item.recommendation],
-            item.resulting_shanten if item.resulting_shanten is not None else 99,
-            -(item.ukeire_count or 0),
-            kind_rank.get(item.action.kind, 4),
-        ),
-    )
+    if strategy_mode == "speed_priority":
+        best = min(
+            legal,
+            key=lambda item: (
+                rank[item.recommendation],
+                item.resulting_shanten if item.resulting_shanten is not None else 99,
+                -(item.ukeire_count or 0),
+                -item.value.guaranteed_han,
+                -item.value.known_dora,
+                kind_rank.get(item.action.kind, 4),
+            ),
+        )
+    else:
+        best = min(
+            legal,
+            key=lambda item: (
+                rank[item.recommendation],
+                item.resulting_shanten if item.resulting_shanten is not None else 99,
+                -(item.ukeire_count or 0),
+                kind_rank.get(item.action.kind, 4),
+            ),
+        )
     return best.action
+
+
+def _strategy_mode(context: RoundContext) -> StrategyMode:
+    if context.points is None or any(points is None for points in context.opponent_points):
+        return "neutral"
+    return (
+        "speed_priority"
+        if max(context.points, *context.opponent_points) - context.points <= 5000
+        else "neutral"
+    )
 
 
 def _riichi_illegal_reason(melds: Sequence[MeldState], context: RoundContext) -> str | None:
@@ -630,6 +661,13 @@ def _validate_winds(context: RoundContext) -> None:
     for label, value in (("自风", context.seat_wind), ("场风", context.round_wind)):
         if value is not None and normalize_tile(value) not in winds:
             raise ValueError(f"{label}必须是东南西北之一")
+
+
+def _validate_opponent_points(context: RoundContext) -> None:
+    if len(context.opponent_points) != 3:
+        raise ValueError("对手点数必须固定包含右家、对家、左家三项")
+    if any(points is not None and not isinstance(points, int) for points in context.opponent_points):
+        raise ValueError("对手点数必须是整数或未知")
 
 
 def _contains_tiles(hand: Sequence[str], needed: Sequence[str]) -> bool:

@@ -1,6 +1,33 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ShantenBreakdown:
+    """The independently calculated shanten values for each closed-hand shape."""
+
+    normal: int
+    chiitoitsu: int | None
+    kokushi: int | None
+
+
 def calculate_shanten(counts: list[int], open_meld_count: int = 0) -> int:
+    breakdown = calculate_shanten_breakdown(counts, open_meld_count)
+    return min(
+        value
+        for value in (
+            breakdown.normal,
+            breakdown.chiitoitsu,
+            breakdown.kokushi,
+        )
+        if value is not None
+    )
+
+
+def calculate_shanten_breakdown(
+    counts: list[int], open_meld_count: int = 0
+) -> ShantenBreakdown:
     if not 0 <= open_meld_count <= 4:
         raise ValueError("副露组数必须在 0 到 4 之间")
     total = sum(counts)
@@ -8,8 +35,12 @@ def calculate_shanten(counts: list[int], open_meld_count: int = 0) -> int:
         raise ValueError("没有可分析的牌")
     normal = normal_shanten(tuple(counts), open_meld_count)
     if open_meld_count:
-        return normal
-    return min(normal, chiitoitsu_shanten(counts), kokushi_shanten(counts))
+        return ShantenBreakdown(normal, None, None)
+    return ShantenBreakdown(
+        normal,
+        chiitoitsu_shanten(counts),
+        kokushi_shanten(counts),
+    )
 
 
 def normal_shanten(counts: tuple[int, ...], open_meld_count: int = 0) -> int:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from time import perf_counter
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
@@ -94,6 +95,7 @@ class MainWindow(QMainWindow):
         self.pending_region: str | None = None
         self.capture_in_progress = False
         self.capture_hidden = False
+        self.capture_started_at: float | None = None
         self.force_publish_current = False
         self.stability = RecognitionStabilizer(required_observations=3)
         self.river_events = RiverEventTracker()
@@ -1406,6 +1408,7 @@ class MainWindow(QMainWindow):
 
         self.force_publish_current = self.sender() is not self.timer
         self.capture_in_progress = True
+        self.capture_started_at = perf_counter()
         self.capture_hidden = self.should_hide_for_capture()
         overlay_needs_hide = (
             self.suggestion_overlay.isVisible()
@@ -1522,7 +1525,7 @@ class MainWindow(QMainWindow):
         assert self.recognizer is not None
         status = (
             f"{status_prefix}，平均置信度 {result.confidence:.3f}，"
-            f"模板 {len(self.recognizer.templates.templates)} 个"
+            f"模板 {len(self.recognizer.templates.templates)} 个{self._capture_timing_text()}"
         )
         if result.meld_error:
             status += "；副露部分未知但牌效分析已继续"
@@ -1554,6 +1557,7 @@ class MainWindow(QMainWindow):
                 seat_wind=wind_state.wind,
                 round_wind=round_state.round_wind,
                 points=scores.get("self"),
+                opponent_points=tuple(scores.get(seat) for seat in ("right", "across", "left")),
                 dora_indicators=tuple(result.dora_indicators),
             )
             if self.active_river_event is not None:
@@ -1630,6 +1634,7 @@ class MainWindow(QMainWindow):
         opponent_text = ("\n".join(opponent_lines) + "\n") if opponent_lines else ""
         river_lines = []
         rivers_by_seat = {player.seat: player for player in result.rivers}
+        river_layouts = {player.seat: player for player in self.config.layout.rivers}
         for seat in ("self", "right", "across", "left"):
             river = rivers_by_seat.get(seat)
             if river is None:
@@ -1639,7 +1644,13 @@ class MainWindow(QMainWindow):
                 name = tile.name or "?"
                 riichi = "(立直)" if tile.is_riichi else ""
                 slots.append(f"r{tile.row + 1}c{tile.column + 1}={name}{riichi}")
-            text = " ".join(slots) if slots else "-"
+            configured = river_layouts.get(seat)
+            if slots:
+                text = " ".join(slots)
+            elif configured is not None and not configured.tiles and configured.tile_count == 0:
+                text = "未配置牌槽"
+            else:
+                text = "-"
             if river.error:
                 text += f"（部分未知：{river.error}）"
             river_lines.append(f"{SEAT_LABELS[seat]}牌河: {text}")
@@ -1647,18 +1658,31 @@ class MainWindow(QMainWindow):
         round_state = result.table_state.round
         wind_state = result.table_state.self_wind
         wind_labels = {"east": "东", "south": "南", "west": "西", "north": "北"}
+        table_layout = self.config.layout.table_state
         if round_state.round_wind is not None and round_state.hand_number is not None:
             round_text = f"{wind_labels[round_state.round_wind]}{round_state.hand_number}局"
         else:
-            round_text = "未知"
+            round_text = self._table_field_text(
+                round_state.error,
+                table_layout.round_region is not None,
+            )
+        self_wind_text = wind_labels.get(wind_state.wind)
+        if self_wind_text is None:
+            self_wind_text = self._table_field_text(
+                wind_state.error,
+                table_layout.self_wind_region is not None,
+            )
         score_by_seat = {item.seat: item.score for item in result.table_state.scores}
+        score_errors = {item.seat: item.error for item in result.table_state.scores}
+        configured_scores = {item.seat for item in table_layout.scores}
         score_text = " ".join(
-            f"{RIVER_SEAT_LABELS[seat]}={score_by_seat.get(seat) if score_by_seat.get(seat) is not None else '?'}"
+            f"{RIVER_SEAT_LABELS[seat]}="
+            f"{score_by_seat[seat] if score_by_seat.get(seat) is not None else self._table_field_text(score_errors.get(seat), seat in configured_scores)}"
             for seat in ("self", "left", "across", "right")
         )
         table_text = (
-            f"桌况: {round_text}, 自风={wind_labels.get(wind_state.wind, '未知')}, "
-            f"点数 {score_text}\n"
+            f"桌况: {round_text}, 自风={self_wind_text}, 点数 {score_text}\n"
+            f"{self._strategy_text(score_by_seat)}\n"
         )
         return (
             f"{title}\n"
@@ -1683,6 +1707,9 @@ class MainWindow(QMainWindow):
         return self.config.layout.open_meld_count
 
     def finish_capture_display(self) -> None:
+        if self.capture_started_at is not None:
+            self.last_capture_duration_ms = round((perf_counter() - self.capture_started_at) * 1000)
+        self.capture_started_at = None
         self.capture_in_progress = False
         if self.capture_hidden:
             self.show()
@@ -1700,6 +1727,21 @@ class MainWindow(QMainWindow):
     @staticmethod
     def format_analysis(analysis) -> str:
         lines = [f"当前向听: {analysis.shanten}"]
+        breakdown = getattr(analysis, "breakdown", None)
+        if breakdown is not None:
+            parts = [f"一般形 {breakdown.normal}"]
+            if breakdown.chiitoitsu is not None:
+                parts.append(f"七对子 {breakdown.chiitoitsu}")
+            if breakdown.kokushi is not None:
+                parts.append(f"国士 {breakdown.kokushi}")
+            best = []
+            if breakdown.normal == analysis.shanten:
+                best.append("一般形")
+            if breakdown.chiitoitsu == analysis.shanten:
+                best.append("七对子")
+            if breakdown.kokushi == analysis.shanten:
+                best.append("国士")
+            lines.append(f"向听分解: {'，'.join(parts)}；当前最优形：{'／'.join(best)}")
         if analysis.shanten == -1:
             lines.append("已完成和牌形（尚未判断役种、振听与是否可和）。")
             return "\n".join(lines)
@@ -1720,6 +1762,33 @@ class MainWindow(QMainWindow):
                 f"有效牌 {rec.ukeire_count} 枚 [{effective}]，{rec.reason}"
             )
         return "\n".join(lines)
+
+    def _capture_timing_text(self) -> str:
+        if self.capture_started_at is None:
+            return ""
+        return f"，本帧 {round((perf_counter() - self.capture_started_at) * 1000)}ms"
+
+    @staticmethod
+    def _table_field_text(error: str | None, configured: bool) -> str:
+        if not configured:
+            return "?（未框选）"
+        if error and error.startswith("No "):
+            return "?（缺模板）"
+        if error:
+            return "?（低置信）"
+        return "?（未识别）"
+
+    @staticmethod
+    def _strategy_text(scores: dict[str, int | None]) -> str:
+        ordered = ("self", "right", "across", "left")
+        if any(scores.get(seat) is None for seat in ordered):
+            return "分差策略: 点数不完整，未启用速度优先"
+        own = scores["self"]
+        assert own is not None
+        difference = max(scores[seat] for seat in ordered) - own
+        if difference <= 5000:
+            return f"分差策略: 距最高分 {difference}，速度优先（向听→有效牌→已知价值）"
+        return f"分差策略: 距最高分 {difference}，保持中性牌效排序"
 
 
 def main() -> None:

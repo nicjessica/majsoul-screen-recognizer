@@ -2,8 +2,11 @@ import unittest
 
 from mahjong.decision import (
     ActionCandidate,
+    ActionEvaluation,
+    ValueEstimate,
     MeldState,
     RoundContext,
+    _pick_preferred,
     evaluate_actions,
     generate_call_candidates,
     generate_state_candidates,
@@ -48,6 +51,63 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual(legal.evaluations[0].value.guaranteed_yaku, ("riichi",))
         self.assertFalse(no_points.evaluations[0].legal)
         self.assertFalse(too_late.evaluations[0].legal)
+
+    def test_complete_scores_enable_speed_priority_only_within_five_thousand(self):
+        contexts = {
+            "within_boundary": RoundContext(
+                points=25000,
+                opponent_points=(30000, 25000, 25000),
+            ),
+            "one_point_beyond": RoundContext(
+                points=25000,
+                opponent_points=(30001, 25000, 25000),
+            ),
+            "incomplete": RoundContext(
+                points=25000,
+                opponent_points=(30000, None, 25000),
+            ),
+        }
+
+        reports = {
+            name: evaluate_actions(
+                self.waiting_hand,
+                candidates=[ActionCandidate("skip")],
+                context=context,
+            )
+            for name, context in contexts.items()
+        }
+
+        self.assertEqual(reports["within_boundary"].strategy_mode, "speed_priority")
+        self.assertEqual(reports["one_point_beyond"].strategy_mode, "neutral")
+        self.assertEqual(reports["incomplete"].strategy_mode, "neutral")
+
+    def test_speed_priority_uses_known_value_after_equal_hand_speed(self):
+        def evaluation(action, han, dora):
+            return ActionEvaluation(
+                action=action,
+                legal=True,
+                legality="legal",
+                resulting_shanten=1,
+                ukeire_count=9,
+                effective_tiles=(),
+                relative_win_chance="similar",
+                win_chance_uncertainty="high",
+                value=ValueEstimate((), han, dora),
+                recommendation="recommended",
+                reasons=(),
+            )
+
+        lower_value = evaluation(ActionCandidate("discard", discard_tile="9m"), 0, 0)
+        higher_value = evaluation(ActionCandidate("riichi", discard_tile="east"), 1, 1)
+
+        self.assertEqual(
+            _pick_preferred([lower_value, higher_value]),
+            lower_value.action,
+        )
+        self.assertEqual(
+            _pick_preferred([lower_value, higher_value], "speed_priority"),
+            higher_value.action,
+        )
 
     def test_open_meld_makes_riichi_illegal(self):
         hand = [
