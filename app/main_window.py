@@ -33,6 +33,7 @@ from mahjong.decision import (
     evaluate_actions,
     generate_call_candidates,
 )
+from mahjong.shape_routes import KnownMeld, ShapeRouteContext, match_shape_routes
 from recognizer.capture import ScreenCapture
 from recognizer.config import (
     MELD_KINDS,
@@ -1608,8 +1609,12 @@ class MainWindow(QMainWindow):
                 visible_tiles=collect_visible_tiles(result),
             )
             analysis_text = self.format_analysis(analysis)
+            shape_routes_text = self.format_shape_routes(
+                match_shape_routes(self._shape_route_context(result, tiles))
+            )
         except ValueError as exc:
             analysis_text = f"牌效分析不可用: {exc}"
+            shape_routes_text = "牌型方向不可用：可靠牌面或副露结构不足。"
 
         meld_lines = []
         for index, meld in enumerate(result.melds, start=1):
@@ -1698,13 +1703,36 @@ class MainWindow(QMainWindow):
             f"{table_text}"
             f"置信度: {result.confidence:.3f}\n\n"
             "牌效分析（已知可见牌修正）\n"
-            f"{analysis_text}"
+            f"{analysis_text}\n\n"
+            f"{shape_routes_text}"
         )
 
     def _effective_open_meld_count(self, result) -> int:
         if result.open_meld_count is not None:
             return result.open_meld_count
         return self.config.layout.open_meld_count
+
+    def _shape_route_context(self, result, tiles: list[str]) -> ShapeRouteContext:
+        known_melds = []
+        for meld in result.melds:
+            names = tuple(tile.name for tile in meld.tiles)
+            if meld.kind == "unknown" or any(name is None for name in names):
+                continue
+            known_melds.append(
+                KnownMeld(
+                    meld.kind,
+                    tuple(name for name in names if name is not None),
+                    is_open=meld.kind != "ankan",
+                )
+            )
+        table = result.table_state
+        return ShapeRouteContext(
+            concealed_tiles=tuple(tiles),
+            open_meld_count=self._effective_open_meld_count(result),
+            melds=tuple(known_melds),
+            seat_wind=table.self_wind.wind,
+            round_wind=table.round.round_wind,
+        )
 
     def finish_capture_display(self) -> None:
         if self.capture_started_at is not None:
@@ -1761,6 +1789,36 @@ class MainWindow(QMainWindow):
                 f"{index}. 切 {rec.discard}: 向听 {rec.resulting_shanten}, "
                 f"有效牌 {rec.ukeire_count} 枚 [{effective}]，{rec.reason}"
             )
+        return "\n".join(lines)
+
+    @staticmethod
+    def format_shape_routes(report) -> str:
+        lines = ["最接近牌型路线（非和牌、役成立或打点判定）"]
+        selected = []
+        if report.primary_candidate is not None:
+            selected.append(report.primary_candidate)
+        static = sorted(
+            (
+                item
+                for item in report.candidates
+                if item.status == "candidate" and item.metric_kind != "shanten"
+            ),
+            key=lambda item: (item.metric if item.metric is not None else 99, item.id),
+        )
+        selected.extend(item for item in static if item not in selected)
+        for item in selected[:4]:
+            if item.metric_kind == "shanten":
+                metric = f"{item.metric} 向听"
+            elif item.metric_kind == "discard_conflicts":
+                metric = f"需处理 {item.metric} 张冲突牌"
+            else:
+                metric = f"距役牌刻子 {item.metric} 张"
+            evidence = f"；{'；'.join(item.evidence)}" if item.evidence else ""
+            lines.append(f"- {item.name}: {metric}{evidence}")
+        insufficient = [item.name for item in report.candidates if item.status == "insufficient_data"]
+        if insufficient:
+            lines.append(f"- 信息不足未判定: {'、'.join(insufficient[:3])}")
+        lines.append("仅基于当前可靠牌面；不会改变向听、有效牌或切牌排序。")
         return "\n".join(lines)
 
     def _capture_timing_text(self) -> str:

@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from app.main_window import MainWindow
 from mahjong.analyzer import analyze_hand
+from mahjong.shape_routes import ShapeRouteContext, match_shape_routes
 from recognizer.config import PlayerMeldLayoutConfig, RelativeRegion, default_config
 from recognizer.geometry import ScreenRegion
 
@@ -99,6 +100,20 @@ class MainWindowHelperTests(unittest.TestCase):
             "速度优先",
             MainWindow._strategy_text({"self": 25000, "right": 30000, "across": 25000, "left": 25000}),
         )
+
+    def test_format_shape_routes_labels_it_as_a_non_scoring_direction(self):
+        report = match_shape_routes(ShapeRouteContext(
+            concealed_tiles=(
+                "1m", "1m", "4s", "4s", "7s", "7s", "8s", "8s",
+                "east", "east", "north", "white", "red", "9s",
+            ),
+        ))
+
+        text = MainWindow.format_shape_routes(report)
+
+        self.assertIn("七对子: 1 向听", text)
+        self.assertIn("非和牌、役成立或打点判定", text)
+        self.assertIn("不会改变向听、有效牌或切牌排序", text)
 
 
 if __name__ == "__main__":
